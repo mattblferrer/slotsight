@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SlotSight / Lot 01</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='style.css', v='2') }}"
+    />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/"
+        ><span class="brand-mark">S</span><span>slotsight</span></a
+      >
+      <div class="topbar-meta">
+        <span class="live-dot"></span><span>Live monitor</span
+        ><span class="divider"></span><span id="sourceLabel">Demo source</span>
+      </div>
+      <button
+        class="icon-button"
+        id="refreshButton"
+        title="Refresh now"
+        aria-label="Refresh now"
+      >
+        &#8635;
+      </button>
+    </header>
+
+    <main class="shell">
+      <section class="intro">
+        <div>
+          <p class="eyebrow">
+            Parking operations / <span id="lotNameLabel">Lot 01</span>
+          </p>
+          <h1>Know the lot<br /><em>at a glance.</em></h1>
+        </div>
+        <div class="intro-actions">
+          <span class="update-note"
+            >Updated <strong id="updatedAt">--:--:--</strong></span
+          ><button class="button button-dark" id="openConfig">
+            Configure slots <span>+</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="stats" aria-label="Lot summary">
+        <article class="stat-card stat-main">
+          <span class="stat-label">Available now</span
+          ><strong id="freeCount">--</strong
+          ><span class="stat-detail"
+            >of <span id="totalCount">--</span> defined slots</span
+          >
+        </article>
+        <article class="stat-card">
+          <span class="stat-label"
+            ><span class="status-dot dot-occupied"></span>Occupied</span
+          ><strong id="occupiedCount">--</strong
+          ><span class="stat-detail">vehicles detected</span>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label"
+            ><span class="status-dot dot-unknown"></span>Needs review</span
+          ><strong id="unknownCount">--</strong
+          ><span class="stat-detail">low confidence</span>
+        </article>
+        <article class="stat-card stat-health">
+          <span class="stat-label">System health</span
+          ><strong id="modelLabel">Demo</strong
+          ><span class="stat-detail"
+            ><span class="health-pill">● Online</span> / refresh &lt; 5
+            sec</span
+          >
+        </article>
+      </section>
+
+      <section class="workspace">
+        <div class="panel map-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Live occupancy map</p>
+              <h2 id="lotNameHeading">Lot 01</h2>
+            </div>
+            <div class="map-actions">
+              <button class="map-edit-button" id="editLayout" type="button">
+                Edit layout
+              </button>
+              <button class="map-clear-button" id="clearLayout" type="button">
+                Clear layout
+              </button>
+              <span class="camera-tag">CAM-01</span>
+            </div>
+          </div>
+          <div class="lot-map" id="lotMap">
+            <img
+              class="map-preview-image"
+              id="mapPreviewImage"
+              alt="Last processed parking frame"
+            />
+            <div class="lot-road road-top">NORTH ENTRY</div>
+            <div class="lot-road road-bottom">EXIT</div>
+            <div class="map-grid"></div>
+            <div id="slotLayer"></div>
+            <div class="editor-layer" id="editorLayer" hidden></div>
+            <div class="confidence-tooltip" id="confidenceTooltip" hidden></div>
+          </div>
+          <div class="map-footer">
+            <div class="legend">
+              <span><i class="legend-swatch vacant"></i>Available</span
+              ><span><i class="legend-swatch occupied"></i>Occupied</span
+              ><span><i class="legend-swatch unknown"></i>Unknown</span>
+            </div>
+            <span class="map-footnote" id="mapFootnote"
+              >Polygon view / 12 slots</span
+            >
+          </div>
+        </div>
+        <aside class="panel activity-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Activity</p>
+              <h2>Latest reading</h2>
+            </div>
+            <span class="pulse-ring"></span>
+          </div>
+          <div class="activity-list" id="activityList"></div>
+          <div class="activity-bottom">
+            <span>Auto refresh</span
+            ><label class="switch"
+              ><input
+                type="checkbox"
+                id="autoRefresh"
+                checked /><span></span></label
+            ><span id="refreshInterval">5s</span>
+          </div>
+        </aside>
+      </section>
+
+      <section class="lower-grid">
+        <div class="panel source-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Input source</p>
+              <h2>Test a frame</h2>
+            </div>
+            <span class="source-icon">IMG</span>
+          </div>
+          <p class="panel-copy">
+            Upload a parking-lot image to classify the configured polygons. With
+            no upload, the demo feed keeps the dashboard moving.
+          </p>
+          <form id="uploadForm">
+            <label class="upload-zone" for="sourceFile"
+              ><span class="upload-plus">+</span
+              ><span
+                ><strong>Drop an image here</strong
+                ><small>or browse from your device</small></span
+              ><input
+                id="sourceFile"
+                name="source"
+                type="file"
+                accept="image/*" /></label
+            ><button class="button button-accent" type="submit">
+              Process frame <span>&rarr;</span>
+            </button>
+          </form>
+          <div class="frame-preview is-empty" id="framePreview">
+            <img id="previewImage" alt="Annotated parking frame" />
+            <span id="previewPlaceholder"
+              >Processed frames appear here with vehicle boxes and slot
+              indicators.</span
+            >
+          </div>
+          <p class="form-message" id="formMessage"></p>
+        </div>
+        <div class="panel history-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Audit trail</p>
+              <h2>Export history</h2>
+            </div>
+            <span class="history-count">CSV + XLSX</span>
+          </div>
+          <p class="panel-copy">
+            Every processed frame is timestamped by slot, status, confidence,
+            and source for later review.
+          </p>
+          <div class="export-actions">
+            <a class="export-button" href="/api/history.csv"
+              ><span class="file-type">CSV</span><span>Download CSV</span
+              ><span>&rarr;</span></a
+            ><a class="export-button" href="/api/history.xlsx"
+              ><span class="file-type file-green">XLS</span
+              ><span>Download Excel</span><span>&rarr;</span></a
+            >
+          </div>
+        </div>
+      </section>
+      <footer>
+        <span>SlotSight prototype</span
+        ><span>One camera / one lot / operator view</span>
+      </footer>
+    </main>
+
+    <dialog id="configDialog">
+      <form method="dialog" class="config-form">
+        <div class="dialog-head">
+          <div>
+            <p class="eyebrow">Lot setup</p>
+            <h2>Slot polygons</h2>
+          </div>
+          <button class="close-button" value="cancel" aria-label="Close">
+            &#10005;
+          </button>
+        </div>
+        <p>
+          Name the lot and use normalized coordinates from 0 to 100. Each slot
+          needs an id and at least three points.
+        </p>
+        <label class="config-field" for="lotNameInput">
+          <span>Parking lot name</span>
+          <input id="lotNameInput" maxlength="80" required />
+        </label>
+        <label class="config-field" for="reviewThresholdInput">
+          <span
+            >Review below <output id="reviewThresholdValue">45%</output></span
+          >
+          <input
+            id="reviewThresholdInput"
+            type="range"
+            min="0"
+            max="100"
+            step="5"
+            value="45"
+          />
+        </label>
+        <textarea id="configInput" spellcheck="false"></textarea>
+        <div class="dialog-actions">
+          <span class="form-message" id="configMessage"></span
+          ><button class="button button-dark" id="saveConfig" value="default">
+            Save configuration
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>

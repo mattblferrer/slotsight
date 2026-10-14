@@ -1,0 +1,5 @@
+{
+  "lot_name": "Lot 01",
+  "review_threshold": 0.85,
+  "model_path": "yolo11s.pt"
+}
