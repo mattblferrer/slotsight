@@ -157,7 +157,6 @@ function renderActivity(data) {
     unknown: "dot-unknown",
   };
   $("activityList").innerHTML = (data.slots || [])
-    .slice(0, 6)
     .map(
       (item) => `
     <div class="activity-row"><span><i class="status-dot ${colors[item.status] || "dot-unknown"}"></i>${item.id}</span><span class="activity-status">${item.status}</span><span class="activity-time">${timeOnly(data.updated_at)}</span></div>
