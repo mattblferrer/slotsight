@@ -27,14 +27,14 @@ SlotSight is a prototype that counts parking occupancy from one fixed camera at 
 
 Only `README.md`, `.gitignore` and this `.claude/` folder sit at the top level. Everything else lives in `slotsight/`. The `.venv` virtual environment also stays at the top level (gitignored; venvs break if moved).
 
-- `slotsight/app.py`: the backend (Flask routes, settings and slot persistence, detection, classification, annotation, history and export). `BASE_DIR` is `slotsight/`, so data files resolve there.
+- `slotsight/app.py`: the backend (Flask routes, settings and slot persistence, detection, classification, annotation, history and export). `BASE_DIR` is `slotsight/`. `CONFIG_DIR`, `DATA_DIR` and `MODELS_DIR` are its `config/`, `data/` and `models/` subfolders.
 - `slotsight/sources.py`: `SourceWorker`, which reads video files, streams and cameras on a background thread and samples one frame per `sample_interval_s`
 - `slotsight/static/app.js`: dashboard logic (2 s polling, map rendering, slot polygon editor, config dialog, uploads, live-source controls, job progress)
 - `slotsight/static/style.css`, `slotsight/templates/index.html`: the UI
-- `slotsight/slots.json`: slot polygons, with coordinates **normalised 0–100** relative to frame width and height
-- `slotsight/settings.txt`: JSON despite the extension (`lot_name`, `review_threshold`, `overlap_threshold`, `sample_interval_s`, `model_path`)
-- `slotsight/occupancy_history.csv`: append-only log (`timestamp, slot_id, status, confidence, source, frame_time_s`). Gitignored, like the archived `occupancy_history-*.csv` files.
-- `slotsight/yolo11s.pt`: the model weights (COCO; vehicle classes 2 car, 3 motorcycle, 5 bus, 7 truck)
+- `slotsight/config/slots.json`: slot polygons, with coordinates **normalised 0–100** relative to frame width and height
+- `slotsight/config/settings.txt`: JSON despite the extension (`lot_name`, `review_threshold`, `overlap_threshold`, `sample_interval_s`, `model_path`)
+- `slotsight/data/occupancy_history.csv`: append-only log (`timestamp, slot_id, status, confidence, source, frame_time_s`). Gitignored, like the archived `occupancy_history-*.csv` files.
+- `slotsight/models/`: model weights. `yolo11s.pt` is the default (COCO; vehicle classes 2 car, 3 motorcycle, 5 bus, 7 truck). Relative `model_path` values resolve here. Other `.pt` files are gitignored.
 - `slotsight/scripts/measure_update_interval.py`: the R-04 timing test
 - `slotsight/docs/`: `requirements.md`, `PLAN.md`, `evaluation.md`
 
@@ -61,11 +61,12 @@ The local `.venv` already has Flask, OpenCV, numpy, openpyxl and ultralytics ins
 
 ## Rules and pitfalls
 
+- The repo lives in OneDrive and is open in VS Code. Files have been deleted or recreated outside Claude's commands after moves: an archive was sent to the Recycle Bin, and a stray `settings.txt` reappeared. After moving or deleting files, re-check with `git status` and `ls`, and never assume an untracked file is still where it was.
 - **Never let demo data mix with real inference.** Demo output is only for when no frame or model is present. An empty detection list on a real frame means every slot is vacant. A detector error must show up as an error, never as demo data.
 - **GET endpoints must not write history.** Only processing a frame appends rows.
 - "Unknown" must protect against false "free" readings (R-07). Don't hard-code confidence values for vacant slots.
 - Keep defaults in sync across `app.py` constants, `settings.txt` and the UI defaults (slider, `POLL_MS` in `app.js`, `DASHBOARD_POLL_S` in the timing script).
-- Resolve file paths against `BASE_DIR`, not the working directory.
+- Resolve file paths against `BASE_DIR` (or `CONFIG_DIR`, `DATA_DIR`, `MODELS_DIR`), not the working directory. Editable config goes in `config/`, generated output in `data/`, and weights in `models/`. `sources.py` stays next to `app.py` because it's app code. `scripts/` is only for tools run by hand.
 - Threading: run inference outside `state_lock` (status polls must never wait on it). Model calls are serialised by `inference_lock`. Lock order is source_lock → state_lock → model_lock; never take state_lock while holding inference_lock.
 - Build DOM from server or config data with `textContent` or element creation, not raw `innerHTML` interpolation.
 - Don't overwrite the user's `slots.json`, `settings.txt` or `occupancy_history.csv` during tests. Point `app.CONFIG_PATH`, `app.SETTINGS_PATH` and `app.HISTORY_PATH` at a temporary directory and use `app.app.test_client()`. Add `slotsight/` to `sys.path` to import `app`.

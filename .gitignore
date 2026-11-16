@@ -219,3 +219,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# SlotSight: detection models you download go in slotsight/models/ and stay out of git;
+# only the default model is tracked.
+slotsight/models/*
+!slotsight/models/yolo11s.pt

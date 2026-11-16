@@ -13,9 +13,9 @@ pip install -r slotsight/requirements.txt
 python slotsight/app.py
 ```
 
-Open http://127.0.0.1:5000.
+Open <http://127.0.0.1:5000>.
 
-Without a detection model, the dashboard runs in demo mode with sample data, which is never logged. To enable vehicle detection, install `ultralytics` and place a compatible YOLO `.pt` model in the `slotsight/` folder. `model_path` in `slotsight/settings.txt` selects the model; the `SLOTSIGHT_MODEL` environment variable overrides it. Relative paths resolve against the `slotsight/` folder. With a model loaded, slots show as unknown until a frame is processed, and a frame that can't be analysed returns an error instead of demo data.
+Without a detection model, the dashboard runs in demo mode with sample data, which is never logged. To enable vehicle detection, install `ultralytics` and place a compatible YOLO `.pt` model in `slotsight/models/`. `model_path` in `slotsight/config/settings.txt` selects the model by file name (e.g. `yolo11n.pt` to switch to a smaller, faster model); the `SLOTSIGHT_MODEL` environment variable overrides it. Relative paths resolve against `slotsight/models/`. Only the default `yolo11s.pt` is tracked by git; other models you add there are ignored. With a model loaded, slots show as unknown until a frame is processed, and a frame that can't be analysed returns an error instead of demo data.
 
 ## Repository layout
 
@@ -25,10 +25,13 @@ README.md, .gitignore
 slotsight/
   app.py                   Flask backend: detection, classification, history, API
   sources.py               video file, stream and camera reader
-  requirements.txt
-  settings.txt             lot name, thresholds, sample interval, model path (JSON)
-  slots.json               slot polygons
-  yolo11s.pt               detection model
+  requirements.txt         Python dependencies
+  config/                  files you edit
+    settings.txt           lot name, thresholds, sample interval, model (JSON)
+    slots.json             slot polygons
+  data/                    generated output (gitignored)
+    occupancy_history.csv  one row per slot per processed frame
+  models/                  detection models (yolo11s.pt by default)
   static/, templates/      dashboard UI
   scripts/                 measurement tools
   docs/                    requirements.md, PLAN.md, evaluation.md
@@ -49,11 +52,12 @@ The detector treats common vehicle classes (car, motorcycle, bus, truck) as dete
 
 ## Configuration and data
 
-All in `slotsight/`:
+All paths are under `slotsight/`:
 
-- `slots.json`: slot polygons, edited with **Configure slots** or **Edit layout**. Coordinates are normalised from 0 to 100, so a configuration works at any image size.
-- `settings.txt`: lot name, `review_threshold`, `overlap_threshold`, `sample_interval_s` (default 2 s) and `model_path`.
-- `occupancy_history.csv`: one row per slot for every processed frame (viewing the dashboard doesn't add rows). Columns: `timestamp, slot_id, status, confidence, source, frame_time_s`, where `frame_time_s` is the frame's position in a video file. The dashboard offers CSV and Excel downloads.
+- `config/slots.json`: slot polygons, edited with **Configure slots** or **Edit layout**. Coordinates are normalised from 0 to 100, so a configuration works at any image size.
+- `config/settings.txt`: lot name, `review_threshold`, `overlap_threshold`, `sample_interval_s` (default 2 s) and `model_path`.
+- `data/occupancy_history.csv`: one row per slot for every processed frame (viewing the dashboard doesn't add rows). Columns: `timestamp, slot_id, status, confidence, source, frame_time_s`, where `frame_time_s` is the frame's position in a video file. The dashboard offers CSV and Excel downloads. Older history files are kept beside it as `occupancy_history-<date>.csv`.
+- `models/`: detection model weights.
 
 The dashboard polls every 2 s. With 2 s sampling, a change reaches the screen within about 4 s (see [`slotsight/docs/evaluation.md`](slotsight/docs/evaluation.md)).
 

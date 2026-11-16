@@ -24,9 +24,12 @@ except ImportError:  # Optional for lightweight demo mode.
     YOLO = None
 
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "slots.json"
-SETTINGS_PATH = BASE_DIR / "settings.txt"
-HISTORY_PATH = BASE_DIR / "occupancy_history.csv"
+CONFIG_DIR = BASE_DIR / "config"  # files you edit: slot polygons and settings
+DATA_DIR = BASE_DIR / "data"  # generated output: occupancy history
+MODELS_DIR = BASE_DIR / "models"  # detection model weights (.pt)
+CONFIG_PATH = CONFIG_DIR / "slots.json"
+SETTINGS_PATH = CONFIG_DIR / "settings.txt"
+HISTORY_PATH = DATA_DIR / "occupancy_history.csv"
 DEFAULT_LOT_NAME = "Lot 01"
 DEFAULT_REVIEW_THRESHOLD = 0.7
 DEFAULT_OVERLAP_THRESHOLD = 0.4
@@ -118,6 +121,7 @@ def load_slots() -> list[dict[str, Any]]:
 
 
 def save_slots(slots: list[dict[str, Any]]) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(slots, indent=2), encoding="utf-8")
 
 
@@ -156,6 +160,7 @@ def load_settings() -> dict[str, Any]:
         "model_path": str(settings.get("model_path") or DEFAULT_MODEL_PATH),
     }
     if not SETTINGS_PATH.exists() or set(normalized) - set(settings):
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
         SETTINGS_PATH.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
     return normalized
 
@@ -170,6 +175,7 @@ def save_settings(**updates: Any) -> dict[str, Any]:
 def ensure_history() -> None:
     """Create the history file, or upgrade an older one to the current columns."""
     if not HISTORY_PATH.exists():
+        HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
         with HISTORY_PATH.open("w", newline="", encoding="utf-8") as file:
             csv.writer(file).writerow(HISTORY_COLUMNS)
         return
@@ -206,9 +212,15 @@ def append_history(
 
 
 def resolve_model_path() -> Path:
-    """SLOTSIGHT_MODEL overrides settings.txt; relative paths resolve against the project folder."""
+    """SLOTSIGHT_MODEL overrides settings.txt. Relative paths resolve against models/,
+    falling back to the app folder so a value like "models/yolo11s.pt" also works."""
     path = Path(os.environ.get("SLOTSIGHT_MODEL") or load_settings()["model_path"])
-    return path if path.is_absolute() else BASE_DIR / path
+    if path.is_absolute():
+        return path
+    in_models = MODELS_DIR / path
+    if in_models.exists() or not (BASE_DIR / path).exists():
+        return in_models
+    return BASE_DIR / path
 
 
 def get_model():
@@ -245,7 +257,7 @@ def detect_vehicles(frame) -> list[tuple[float, float, float, float, float]]:
     detector = get_model()
     if detector is None:
         raise DetectionError(
-            "No detection model is loaded. Install ultralytics and set model_path in settings.txt.",
+            "No detection model is loaded. Install ultralytics, put the model in models/ and set model_path in config/settings.txt.",
             status_code=503,
         )
     try:
@@ -480,7 +492,7 @@ def source_status() -> dict[str, Any] | None:
 
 
 def model_unavailable():
-    return jsonify({"error": "No detection model is loaded. Install ultralytics and set model_path in settings.txt."}), 503
+    return jsonify({"error": "No detection model is loaded. Install ultralytics, put the model in models/ and set model_path in config/settings.txt."}), 503
 
 
 @app.get("/")
