@@ -15,6 +15,13 @@ SlotSight is a prototype that counts parking occupancy from one fixed camera at 
 4. When a change affects a requirement, name the requirement ID in the commit message or PR description, and update the requirement status table in `PLAN.md`. Record reviews in its review log and direction changes in its decisions log.
 5. A requirement counts as met only when its acceptance criterion has evidence: evaluation output, a timing measurement or a demo. "Code exists" is not enough.
 
+## Research and decisions
+
+- **Research before designing.** Before building a significant piece (detection and matching logic, video/stream handling, evaluation, the dashboard map, smoothing over time), look at how comparable computer-vision parking-occupancy projects do it. Examples: open-source YOLO and OpenCV parking-spot detectors, PKLot/CNRPark-EXT papers and baselines, and Ultralytics' parking-management solution. Summarise what you took from them, and link the sources in the relevant `PLAN.md` decision entry. Don't copy code whose licence is incompatible.
+- **Ask the user about important decisions. Don't decide silently.** This covers architecture (threading, storage, new modules or services), features (adding, removing or changing user-visible behaviour), requirement interpretations (what an acceptance criterion means in practice, defaults that affect R-01 to R-08), and anything hard to reverse (data formats, history schema, deleting data). Give a recommended option and the trade-offs.
+- **Log every answer in the `PLAN.md` decisions log** with the date, the decision, the reason, and who decided ("user" or "proposed by Claude, approved by user"). Update the roadmap items it affects.
+- Small, easily reversible implementation details don't need a question. Mention them in the summary instead.
+
 ## Run
 
 ```powershell
