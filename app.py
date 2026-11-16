@@ -1,20 +1,19 @@
 from __future__ import annotations
 
-import csv
 import base64
+import csv
 import io
 import json
-import math
 import os
-import random
+import tempfile
 import threading
 import time
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import cv2
+import numpy as np
 from flask import Flask, jsonify, render_template, request, send_file
 
 try:
@@ -27,8 +26,24 @@ CONFIG_PATH = BASE_DIR / "slots.json"
 SETTINGS_PATH = BASE_DIR / "settings.txt"
 HISTORY_PATH = BASE_DIR / "occupancy_history.csv"
 DEFAULT_LOT_NAME = "Lot 01"
-DEFAULT_REVIEW_THRESHOLD = 0.45
-DEFAULT_MODEL_PATH = "yolo11n.pt"
+DEFAULT_REVIEW_THRESHOLD = 0.7
+DEFAULT_OVERLAP_THRESHOLD = 0.4
+DEFAULT_MODEL_PATH = "yolo11s.pt"
+VEHICLE_CLASS_IDS = (2, 3, 5, 7)  # COCO: car, motorcycle, bus, truck
+# Keep weak detections: they should push a slot to "unknown" rather than read as free (R-07).
+DETECTION_CONFIDENCE_FLOOR = 0.1
+
+
+class DetectionError(RuntimeError):
+    """The detector could not produce a result for a frame.
+
+    Callers must surface this as an error and never substitute demo data for it.
+    """
+
+    def __init__(self, message: str, status_code: int = 500) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 app = Flask(
     __name__,
@@ -37,6 +52,8 @@ app = Flask(
 )
 state_lock = threading.Lock()
 model = None
+model_loaded_path: Path | None = None
+model_failed_path: Path | None = None
 latest_frame_snapshot: dict[str, Any] | None = None
 latest_frame = None
 latest_frame_detections = None
@@ -77,6 +94,14 @@ def save_slots(slots: list[dict[str, Any]]) -> None:
     CONFIG_PATH.write_text(json.dumps(slots, indent=2), encoding="utf-8")
 
 
+def unit_interval(value: Any, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(1.0, number))
+
+
 def load_settings() -> dict[str, Any]:
     settings: dict[str, Any] = {}
     if SETTINGS_PATH.exists():
@@ -87,28 +112,22 @@ def load_settings() -> dict[str, Any]:
         except (OSError, json.JSONDecodeError):
             pass
 
-    try:
-        review_threshold = float(settings.get("review_threshold", DEFAULT_REVIEW_THRESHOLD))
-    except (TypeError, ValueError):
-        review_threshold = DEFAULT_REVIEW_THRESHOLD
     normalized = {
         "lot_name": str(settings.get("lot_name") or DEFAULT_LOT_NAME).strip()[:80],
-        "review_threshold": max(0.0, min(1.0, review_threshold)),
-        "model_path": str(settings.get("model_path") or os.environ.get("SLOTSIGHT_MODEL", DEFAULT_MODEL_PATH)),
+        "review_threshold": unit_interval(settings.get("review_threshold"), DEFAULT_REVIEW_THRESHOLD),
+        "overlap_threshold": unit_interval(settings.get("overlap_threshold"), DEFAULT_OVERLAP_THRESHOLD),
+        "model_path": str(settings.get("model_path") or DEFAULT_MODEL_PATH),
     }
-    if not SETTINGS_PATH.exists():
+    if not SETTINGS_PATH.exists() or set(normalized) - set(settings):
         SETTINGS_PATH.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
     return normalized
 
 
-def save_settings(lot_name: str, review_threshold: float, model_path: str | None = None) -> None:
-    current = load_settings()
-    settings = {
-        "lot_name": lot_name,
-        "review_threshold": review_threshold,
-        "model_path": model_path or current["model_path"],
-    }
+def save_settings(**updates: Any) -> dict[str, Any]:
+    settings = load_settings()
+    settings.update(updates)
     SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    return settings
 
 
 def ensure_history() -> None:
@@ -126,72 +145,117 @@ def append_history(results: list[dict[str, Any]], source: str) -> None:
             writer.writerow([timestamp, result["id"], result["status"], result["confidence"], source])
 
 
-def polygon_area(points: list[list[float]]) -> float:
-    return abs(sum(points[index][0] * points[(index + 1) % len(points)][1] - points[(index + 1) % len(points)][0] * points[index][1] for index in range(len(points))) / 2)
-
-
-def slot_points_pixels(slot: dict[str, Any], frame) -> Any:
-    height, width = frame.shape[:2]
-    return __import__("numpy").array(
-        [[float(x) * width / 100, float(y) * height / 100] for x, y in slot["points"]],
-        dtype="float32",
-    )
-
-
-def vehicle_overlaps_slot(box: tuple[float, float, float, float], slot: dict[str, Any], frame) -> bool:
-    x1, y1, x2, y2 = box
-    polygon = slot_points_pixels(slot, frame)
-    candidates = [(x1, y1), (x2, y1), (x2, y2), (x1, y2), ((x1 + x2) / 2, (y1 + y2) / 2)]
-    if any(cv2.pointPolygonTest(polygon, point, False) >= 0 for point in candidates):
-        return True
-    center = tuple(__import__("numpy").mean(polygon, axis=0))
-    return x1 <= center[0] <= x2 and y1 <= center[1] <= y2
+def resolve_model_path() -> Path:
+    """SLOTSIGHT_MODEL overrides settings.txt; relative paths resolve against the project folder."""
+    path = Path(os.environ.get("SLOTSIGHT_MODEL") or load_settings()["model_path"])
+    return path if path.is_absolute() else BASE_DIR / path
 
 
 def get_model():
-    global model
-    model_path = load_settings()["model_path"]
-    if model is None and YOLO is not None and Path(model_path).exists():
-        model = YOLO(model_path)
+    """Return the loaded detector, reloading it when the configured path changes."""
+    global model, model_loaded_path, model_failed_path
+    path = resolve_model_path()
+    if model is not None and model_loaded_path == path:
+        return model
+    model, model_loaded_path = None, None
+    if YOLO is None or not path.exists() or model_failed_path == path:
+        return None
+    try:
+        model = YOLO(str(path))
+        model_loaded_path = path
+    except Exception:
+        app.logger.exception("Could not load detection model from %s", path)
+        model_failed_path = path
     return model
 
 
 def detect_vehicles(frame) -> list[tuple[float, float, float, float, float]]:
+    """Return vehicle boxes as (x1, y1, x2, y2, confidence) in pixels.
+
+    Raises DetectionError when no model is loaded or inference fails, so a failure
+    can never be mistaken for an empty lot.
+    """
     detector = get_model()
-    detections: list[tuple[float, float, float, float, float]] = []
-    if detector is not None and frame is not None:
-        try:
-            prediction = detector(frame, verbose=False)[0]
-            for box, confidence, class_id in zip(prediction.boxes.xyxy.tolist(), prediction.boxes.conf.tolist(), prediction.boxes.cls.tolist()):
-                if int(class_id) in {2, 3, 5, 7} and confidence >= 0.25:
-                    detections.append((*box, float(confidence)))
-        except Exception:
-            detections = []
-    return detections
+    if detector is None:
+        raise DetectionError(
+            "No detection model is loaded. Install ultralytics and set model_path in settings.txt.",
+            status_code=503,
+        )
+    try:
+        prediction = detector(frame, verbose=False, conf=DETECTION_CONFIDENCE_FLOOR, classes=list(VEHICLE_CLASS_IDS))[0]
+        boxes = zip(prediction.boxes.xyxy.tolist(), prediction.boxes.conf.tolist(), prediction.boxes.cls.tolist())
+        return [(*box, float(confidence)) for box, confidence, class_id in boxes if int(class_id) in VEHICLE_CLASS_IDS]
+    except Exception as error:
+        raise DetectionError(f"Vehicle detection failed: {error}") from error
 
 
-def classify_frame(frame, slots: list[dict[str, Any]], detections=None) -> list[dict[str, Any]]:
-    detections = detect_vehicles(frame) if detections is None else detections
+def slot_polygon_pixels(slot: dict[str, Any], width: int, height: int) -> np.ndarray:
+    return np.array(
+        [[float(x) * width / 100, float(y) * height / 100] for x, y in slot["points"]],
+        dtype=np.float32,
+    )
 
+
+def overlap_ratio(box: tuple[float, float, float, float], slot_hull: np.ndarray) -> float:
+    """How strongly a vehicle box overlaps a slot, from 0 to 1.
+
+    The larger of: the share of the slot covered by the box (large vehicles, small
+    distant slots) and the share of the box inside the slot (small vehicles such as
+    motorcycles in a full-size slot).
+    """
+    x1, y1, x2, y2 = box
+    box_area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    slot_area = cv2.contourArea(slot_hull)
+    if box_area <= 0 or slot_area <= 0:
+        return 0.0
+    box_polygon = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float32)
+    intersection, _ = cv2.intersectConvexConvex(box_polygon, slot_hull)
+    return min(1.0, max(intersection / slot_area, intersection / box_area))
+
+
+def classify_frame(frame, slots: list[dict[str, Any]], detections, overlap_threshold: float) -> list[dict[str, Any]]:
+    """Classify every slot from the vehicle detections on a real frame.
+
+    Occupied: a detection overlaps the slot by at least `overlap_threshold`; the
+    confidence is the strongest such detection's score.
+    Vacant: no detection reaches the threshold. Confidence starts at 1 and drops as
+    weaker or partial overlaps appear, so a half-seen vehicle lowers it instead of
+    reading as confidently free (R-07).
+    """
+    height, width = frame.shape[:2]
     results = []
-    for index, slot in enumerate(slots):
-        occupied = False
-        confidence = 0.0
-        if detections:
-            for x1, y1, x2, y2, detection_confidence in detections:
-                if vehicle_overlaps_slot((x1, y1, x2, y2), slot, frame):
-                    occupied = True
-                    confidence = max(confidence, detection_confidence)
-            status = "occupied" if occupied else "vacant"
-            if not occupied:
-                confidence = 0.92
+    for slot in slots:
+        hull = cv2.convexHull(slot_polygon_pixels(slot, width, height)).reshape(-1, 2)
+        occupied_confidence = 0.0
+        vacancy_doubt = 0.0
+        for *box, detection_confidence in detections:
+            ratio = overlap_ratio(box, hull)
+            if ratio <= 0:
+                continue
+            if ratio >= overlap_threshold:
+                occupied_confidence = max(occupied_confidence, detection_confidence)
+            else:
+                vacancy_doubt = max(vacancy_doubt, detection_confidence * (ratio / overlap_threshold) ** 2)
+        if occupied_confidence > 0:
+            status, confidence = "occupied", occupied_confidence
         else:
-            # Keep the product demonstrable without downloading a model: stable sample state.
-            occupied = (index * 7 + int(time.time() // 8)) % 5 in {0, 1}
-            confidence = 0.86 if occupied else 0.92
-            status = "occupied" if occupied else "vacant"
+            status, confidence = "vacant", 1.0 - vacancy_doubt
         results.append({"id": slot["id"], "status": status, "confidence": round(confidence, 2)})
     return results
+
+
+def demo_results(slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Stable sample state so the dashboard is demonstrable without a model. Never used for real frames."""
+    results = []
+    for index, slot in enumerate(slots):
+        occupied = (index * 7 + int(time.time() // 8)) % 5 in {0, 1}
+        results.append({"id": slot["id"], "status": "occupied" if occupied else "vacant", "confidence": 0.86 if occupied else 0.92})
+    return results
+
+
+def waiting_results(slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A model is loaded but no frame has been processed yet: nothing is known."""
+    return [{"id": slot["id"], "status": "unknown", "confidence": 0.0} for slot in slots]
 
 
 def annotate_frame(frame, slots: list[dict[str, Any]], results: list[dict[str, Any]], detections) -> str:
@@ -199,18 +263,11 @@ def annotate_frame(frame, slots: list[dict[str, Any]], results: list[dict[str, A
     height, width = canvas.shape[:2]
     overlay = canvas.copy()
     colors = {"unknown": (121, 216, 246), "occupied": (125, 142, 240), "vacant": (99, 187, 121)}
-    for slot, result in zip(slots, results):
-        points = __import__("numpy").array(
-            [[int(x * width / 100), int(y * height / 100)] for x, y in slot["points"]],
-            dtype="int32",
-        )
+    polygons = [slot_polygon_pixels(slot, width, height).astype(np.int32) for slot in slots]
+    for points, result in zip(polygons, results):
         cv2.fillPoly(overlay, [points], colors[result["status"]])
     canvas = cv2.addWeighted(overlay, 0.12, canvas, 0.88, 0)
-    for slot, result in zip(slots, results):
-        points = __import__("numpy").array(
-            [[int(x * width / 100), int(y * height / 100)] for x, y in slot["points"]],
-            dtype="int32",
-        )
+    for points, result in zip(polygons, results):
         cv2.polylines(canvas, [points], True, colors[result["status"]], max(2, width // 500))
 
     encoded, buffer = cv2.imencode(".jpg", canvas, [cv2.IMWRITE_JPEG_QUALITY, 88])
@@ -219,18 +276,30 @@ def annotate_frame(frame, slots: list[dict[str, Any]], results: list[dict[str, A
     return "data:image/jpeg;base64," + base64.b64encode(buffer).decode("ascii")
 
 
-def demo_results(slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return classify_frame(None, slots)
+def snapshot(frame=None, source: str | None = None, detections=None, record: bool = False) -> dict[str, Any]:
+    """Build the dashboard payload.
 
-
-def snapshot(source: str = "demo", frame=None, detections=None, record: bool = True) -> dict[str, Any]:
+    With a frame: classify it from `detections` (detected here if not given) and,
+    if `record` is set, append the reading to the history.
+    Without a frame: demo data when no model is loaded, otherwise every slot is
+    "unknown" until a frame is processed. These readings are never recorded.
+    """
     slots = load_slots()
-    detections = detect_vehicles(frame) if frame is not None and detections is None else (detections or [])
-    results = classify_frame(frame, slots, detections) if frame is not None else demo_results(slots)
     settings = load_settings()
-    unknown_threshold = settings["review_threshold"]
+    has_model = get_model() is not None
+    if frame is not None:
+        if detections is None:
+            detections = detect_vehicles(frame)
+        results = classify_frame(frame, slots, detections, settings["overlap_threshold"])
+        source = source or "latest frame"
+    elif has_model:
+        results, source, record = waiting_results(slots), "none", False
+    else:
+        results, source, record = demo_results(slots), "demo", False
+
+    review_threshold = settings["review_threshold"]
     for result in results:
-        if result["confidence"] < unknown_threshold:
+        if result["confidence"] < review_threshold:
             result["status"] = "unknown"
     if record:
         append_history(results, source)
@@ -238,10 +307,31 @@ def snapshot(source: str = "demo", frame=None, detections=None, record: bool = T
     unknown = sum(result["status"] == "unknown" for result in results)
     for result, slot in zip(results, slots):
         result["points"] = slot["points"]
-    response = {"slots": results, "total": len(results), "free": len(results) - occupied - unknown, "unknown": unknown, "updated_at": now_iso(), "source": source, "model": "YOLO" if get_model() else "demo classifier", "lot_name": settings["lot_name"], "review_threshold": unknown_threshold}
+    response = {
+        "slots": results,
+        "total": len(results),
+        "free": len(results) - occupied - unknown,
+        "unknown": unknown,
+        "updated_at": now_iso(),
+        "source": source,
+        "model": "YOLO" if has_model else "demo classifier",
+        "lot_name": settings["lot_name"],
+        "review_threshold": review_threshold,
+        "overlap_threshold": settings["overlap_threshold"],
+    }
     if frame is not None:
         response["preview_image"] = annotate_frame(frame, slots, results, detections)
     return response
+
+
+def reclassify_latest_frame() -> None:
+    """Re-run classification on the last uploaded frame after a settings or slot change.
+
+    Reuses the cached detections, so no new inference runs and nothing is recorded.
+    """
+    global latest_frame_snapshot
+    if latest_frame is not None:
+        latest_frame_snapshot = snapshot(latest_frame, latest_frame_source, latest_frame_detections)
 
 
 @app.get("/")
@@ -259,7 +349,6 @@ def status():
 
 @app.post("/api/config")
 def config():
-    global latest_frame_snapshot
     payload = request.get_json(silent=True) or {}
     slots = payload.get("slots")
     settings = load_settings()
@@ -286,14 +375,13 @@ def config():
         return jsonify({"error": "Each slot needs an id and at least three points between 0 and 100."}), 400
     with state_lock:
         save_slots(slots)
-        save_settings(lot_name.strip(), review_threshold)
-        latest_frame_snapshot = None
+        save_settings(lot_name=lot_name.strip(), review_threshold=review_threshold)
+        reclassify_latest_frame()
         return jsonify({"slots": slots, "lot_name": lot_name.strip(), "review_threshold": review_threshold, "message": "Lot configuration saved."})
 
 
 @app.post("/api/review-threshold")
 def review_threshold():
-    global latest_frame_snapshot
     payload = request.get_json(silent=True) or {}
     raw_threshold: Any = payload.get("review_threshold")
     try:
@@ -303,15 +391,9 @@ def review_threshold():
     if not 0 <= threshold <= 1:
         return jsonify({"error": "Review confidence must be between 0% and 100%."}), 400
     with state_lock:
-        settings = load_settings()
-        save_settings(settings["lot_name"], threshold)
-        if latest_frame is not None:
-            latest_frame_snapshot = snapshot(latest_frame_source, latest_frame, latest_frame_detections, record=False)
-        elif latest_frame_snapshot is not None:
-            latest_frame_snapshot["review_threshold"] = threshold
-        else:
-            latest_frame_snapshot = snapshot()
-        return jsonify(latest_frame_snapshot)
+        save_settings(review_threshold=threshold)
+        reclassify_latest_frame()
+        return jsonify(latest_frame_snapshot if latest_frame_snapshot is not None else snapshot())
 
 
 @app.post("/api/process")
@@ -320,14 +402,11 @@ def process():
     uploaded = request.files.get("source")
     if uploaded is None or not uploaded.filename:
         with state_lock:
-            if latest_frame_snapshot is not None:
-                return jsonify(latest_frame_snapshot), 200
-            return jsonify(snapshot()), 200
+            return jsonify(latest_frame_snapshot if latest_frame_snapshot is not None else snapshot())
     if uploaded.content_length and uploaded.content_length > 100 * 1024 * 1024:
         return jsonify({"error": "Files must be smaller than 100 MB."}), 413
     raw = uploaded.read()
-    array = __import__("numpy").frombuffer(raw, dtype=__import__("numpy").uint8)
-    frame = cv2.imdecode(array, cv2.IMREAD_COLOR)
+    frame = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
         suffix = Path(uploaded.filename).suffix or ".mp4"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as temporary_file:
@@ -339,10 +418,15 @@ def process():
     if frame is None:
         return jsonify({"error": "Upload a readable image or video file."}), 400
     with state_lock:
-        latest_frame = frame.copy()
-        latest_frame_detections = detect_vehicles(latest_frame)
+        try:
+            detections = detect_vehicles(frame)
+        except DetectionError as error:
+            app.logger.exception("Could not process %s", uploaded.filename)
+            return jsonify({"error": str(error)}), error.status_code
+        latest_frame = frame
+        latest_frame_detections = detections
         latest_frame_source = uploaded.filename
-        latest_frame_snapshot = snapshot(uploaded.filename, latest_frame, latest_frame_detections)
+        latest_frame_snapshot = snapshot(frame, uploaded.filename, detections, record=True)
         return jsonify(latest_frame_snapshot)
 
 

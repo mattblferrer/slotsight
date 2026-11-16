@@ -14,18 +14,18 @@ The working plan for SlotSight: where the project stands against its requirement
 
 ## Requirement status
 
-Last updated: 2026-11-17 (commit `6356d42`)
+Last updated: 2026-11-17, after Milestone 1A (correctness fixes)
 
 | ID | Requirement | Status | Current gap |
 | --- | --- | --- | --- |
-| R-01 | Classify each slot occupied/vacant (≥90% per-slot accuracy) | ❌ Not met | A frame with no vehicles gets fake demo results. The overlap check over-counts. No ground-truth evaluation. |
-| R-02 | Report total free slots (matches ground truth in ≥90% of frames) | ⚠️ Partial | Count is computed, but it inherits R-01's bugs and has no evaluation. |
+| R-01 | Classify each slot occupied/vacant (≥90% per-slot accuracy) | ⚠️ Partial | Classification is now real (1A fixed the fake-results bug and the overlap check). No ground-truth evaluation yet (1C). |
+| R-02 | Report total free slots (matches ground truth in ≥90% of frames) | ⚠️ Partial | Count is computed from real classifications. No evaluation yet (1C). |
 | R-03 | Accept a video file or live stream plus a slot-polygon config, and output timestamped statuses | ⚠️ Partial | Polygon config works. Video is reduced to frame 1. The upload field only accepts images. No live stream. |
 | R-04 | Status updates at least every 5 s | ⚠️ Partial | The UI polls every 5 s, but nothing processes new frames. No timing test. |
 | R-05 | Evening/rain accuracy ≥90% of daytime | ❌ No evidence | No labeled test sets per condition. No evaluation. |
 | R-06 | Lot map shows each slot's status and time of last update | ⚠️ Partial | Map polygons are transparent, so status shows only on hover or in the uploaded preview image. |
-| R-07 | Low-confidence slots show "unknown" | ⚠️ Partial | Vacant slots are hard-coded to 0.92 confidence, so missed vehicles look confidently free. |
-| R-08 | Export history as CSV/Excel with slot ID, status and timestamp | ✅ Met, with one issue | The history fills with demo rows written by `GET /api/status`. |
+| R-07 | Low-confidence slots show "unknown" | ⚠️ Partial | Vacant confidence now drops with weak or partial detections (1A). Not yet tested on real occluded cases (1C). |
+| R-08 | Export history as CSV/Excel with slot ID, status and timestamp | ✅ Met, with one issue | New rows come only from processed frames (1A). The existing `occupancy_history.csv` still holds old demo rows (1C). |
 
 ### Definition of done
 
@@ -46,12 +46,12 @@ Last updated: 2026-11-17 (commit `6356d42`)
 
 #### 1A. Correctness fixes (blocking for every requirement)
 
-- [ ] **Separate demo mode from real inference.** When a real frame is supplied, an empty detection list means every slot is vacant. The demo pattern runs only when `frame is None` and no model is loaded. A detector exception is reported (logged, plus an error status in the response), never replaced by demo data. *(R-01, R-02)*
-- [ ] **Make `GET /api/status` read-only.** Only processing a frame should append history. Demo snapshots are either not recorded or recorded only by an explicit demo processor. *(R-08)*
-- [ ] **Replace the corner-in-polygon check** with an overlap ratio: the intersection area of the vehicle box and the slot polygon, divided by the slot area, compared with a configurable `overlap_threshold` in `settings.txt`. Use `cv2.intersectConvexConvex` or rasterised masks. Update the README to match. *(R-01)*
-- [ ] **Give vacant slots a real confidence score.** Base it on the best overlapping detection and its confidence. For example: vacant confidence is high only when no detection, even a low-confidence one, overlaps the slot. Run the detector with a low confidence floor (around 0.1) so weak detections can mark a slot "unknown" instead of "vacant". *(R-07)*
-- [ ] **Make defaults consistent** across `app.py`, `settings.txt` and the slider default. Resolve `model_path` against `BASE_DIR`. Reload the model when the path changes.
-- [ ] **Keep the upload snapshot after a config save.** Re-classify `latest_frame` with the new slots instead of falling back to demo data.
+- [x] **Separate demo mode from real inference.** When a real frame is supplied, an empty detection list means every slot is vacant. The demo pattern runs only when `frame is None` and no model is loaded. A detector exception is reported (logged, plus an error status in the response), never replaced by demo data. With a model loaded and no frame yet, slots show as unknown. A frame uploaded with no model returns HTTP 503. *(R-01, R-02)*
+- [x] **Make `GET /api/status` read-only.** Only processing a frame should append history. Demo snapshots are never recorded. Threshold changes, config saves and file-less `POST /api/process` calls don't record either. *(R-08)*
+- [x] **Replace the corner-in-polygon check** with an overlap ratio, compared with a configurable `overlap_threshold` in `settings.txt` (default 0.4). The ratio is the larger of: intersection / slot area, and intersection / box area. The second term keeps small vehicles in large slots from being missed. It is computed with `cv2.intersectConvexConvex` against the slot's convex hull. README updated. *(R-01)*
+- [x] **Give vacant slots a real confidence score.** Vacant confidence = 1 − max(detection confidence × (overlap / overlap_threshold)²) over detections that overlap but fall below the threshold. Occupied confidence is the strongest matching detection's score. The detector now runs with a 0.1 confidence floor, so weak detections push slots to "unknown" instead of "vacant". *(R-07)*
+- [x] **Make defaults consistent** across `app.py`, `settings.txt` and the slider default (review 0.7, overlap 0.4, `yolo11s.pt`). Resolve `model_path` against `BASE_DIR`. Reload the model when the path changes. `SLOTSIGHT_MODEL` now overrides `settings.txt`, as the README describes.
+- [x] **Keep the upload snapshot after a config save.** Re-classify `latest_frame` with the new slots instead of falling back to demo data. Cached detections are reused, so no new inference runs.
 
 #### 1B. Inputs and live updates (R-03, R-04)
 
@@ -127,3 +127,6 @@ These were reproduced with the Flask test client, using YOLO `yolo11s.pt` with c
 | Date | Decision | Reason |
 | --- | --- | --- |
 | 2026-11-17 | Meet R-01 to R-08 before working on improvements | The 2026-11-17 review found that no requirement is fully met, and the core classifier can return fake data |
+| 2026-11-17 | Demo data appears only when no model is loaded and no frame is supplied, and is never logged | Fake readings must never be mistaken for real ones, on screen or in exports |
+| 2026-11-17 | Overlap ratio = max(intersection / slot area, intersection / box area), default threshold 0.4 | Slot-only ratios miss motorcycles in full-size slots. Box-only ratios miss large vehicles over small, distant slots. Final values get tuned in 1C. |
+| 2026-11-17 | Partial or weak detections lower vacant confidence instead of being ignored | Wrong "free" readings are the costly error (R-07), so doubt should show as "unknown" |

@@ -153,8 +153,9 @@
             <span class="source-icon">IMG</span>
           </div>
           <p class="panel-copy">
-            Upload a parking-lot image to classify the configured polygons. With
-            no upload, the demo feed keeps the dashboard moving.
+            Upload a parking-lot image to classify the configured polygons.
+            Without a detection model loaded, a demo feed keeps the dashboard
+            moving.
           </p>
           <form id="uploadForm">
             <label class="upload-zone" for="sourceFile"
@@ -230,7 +231,7 @@
         </label>
         <label class="config-field" for="reviewThresholdInput">
           <span
-            >Review below <output id="reviewThresholdValue">45%</output></span
+            >Review below <output id="reviewThresholdValue">70%</output></span
           >
           <input
             id="reviewThresholdInput"
@@ -238,7 +239,7 @@
             min="0"
             max="100"
             step="5"
-            value="45"
+            value="70"
           />
         </label>
         <textarea id="configInput" spellcheck="false"></textarea>

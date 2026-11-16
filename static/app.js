@@ -2,7 +2,7 @@ const state = {
   slots: [],
   slotConfig: [],
   lotName: "Lot 01",
-  reviewThreshold: 0.45,
+  reviewThreshold: 0.7,
   timer: null,
   editing: false,
 };
@@ -174,8 +174,8 @@ function render(data) {
   $("occupiedCount").textContent = occupied;
   $("unknownCount").textContent = data.unknown ?? 0;
   $("updatedAt").textContent = timeOnly(data.updated_at);
-  $("sourceLabel").textContent =
-    data.source === "demo" ? "Demo source" : data.source;
+  const sourceLabels = { demo: "Demo source", none: "No frame yet" };
+  $("sourceLabel").textContent = sourceLabels[data.source] ?? data.source;
   $("modelLabel").textContent = data.model === "YOLO" ? "YOLO live" : "Demo";
   state.lotName = data.lot_name || state.lotName;
   state.reviewThreshold = data.review_threshold ?? state.reviewThreshold;
@@ -347,7 +347,7 @@ $("uploadForm").addEventListener("submit", async (event) => {
   const file = $("sourceFile").files[0];
   message.textContent = file
     ? "Processing frame..."
-    : "Refreshing demo frame...";
+    : "Refreshing latest reading...";
   const formData = new FormData();
   if (file) formData.append("source", file);
   const response = await fetch("/api/process", {
@@ -357,7 +357,9 @@ $("uploadForm").addEventListener("submit", async (event) => {
   const data = await response.json();
   if (response.ok) {
     render(data);
-    message.textContent = "Reading logged at " + timeOnly(data.updated_at);
+    message.textContent = file
+      ? "Reading logged at " + timeOnly(data.updated_at)
+      : "Showing the latest reading (nothing new logged).";
   } else message.textContent = data.error || "Processing failed.";
 });
 

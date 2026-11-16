@@ -1,5 +1,6 @@
 {
   "lot_name": "Lot 01",
   "review_threshold": 0.7,
+  "overlap_threshold": 0.4,
   "model_path": "yolo11s.pt"
 }
