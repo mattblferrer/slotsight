@@ -3,7 +3,10 @@
 The working plan for SlotSight: where the project stands against its requirements, what's next, and why. Keep it current. Update it whenever work lands, a review happens, or priorities change.
 
 - Requirements (source of truth): [`requirements.md`](requirements.md), IDs R-01 to R-08
-- Agent and project instructions: [`CLAUDE.md`](CLAUDE.md)
+- Measured evidence: [`evaluation.md`](evaluation.md)
+- Agent and project instructions: [`.claude/CLAUDE.md`](../../.claude/CLAUDE.md)
+
+Paths in this document are relative to the `slotsight/` folder unless they start with `slotsight/` or `.claude/`.
 
 ## How to use this document
 
@@ -58,7 +61,7 @@ Last updated: 2026-11-17, after Milestone 1B (inputs and live updates)
 - [x] **Process the whole video.** Frames are sampled every `sample_interval_s` seconds of video time (default 2 s) in a background job (`sources.py`). Each sampled frame logs one row per slot with its video offset (`frame_time_s`). With an optional "recorded at" start time, `timestamp` = start + offset.
 - [x] **Add a live source.** `SourceWorker` reads an RTSP/HTTP URL, webcam index or local video path, drains frames continuously, processes one every `sample_interval_s` seconds, and reconnects up to 5 times after dropouts. The API is `POST /api/source`, `POST /api/source/stop` and `GET /api/source`, with matching UI controls. Stream credentials are removed from displayed and logged names. Inference runs outside the state lock, so status polls stay fast (≤20 ms measured during processing).
 - [x] **Let the upload field accept video** (`accept="image/*,video/*"`). Job progress, frame count and per-frame processing time show under the source panel.
-- [x] **Add a timing test.** `scripts/measure_update_interval.py` runs a source at recorded speed through the full pipeline and reports the results to `docs/evaluation.md`. First run on this laptop (CPU only, synthetic 1080p footage): 0.09 s per frame, 4.05 s worst-case on-screen gap. The model now runs a warm-up inference when it loads, which removed a 1.7 s first-frame delay. *(R-04 evidence)*
+- [x] **Add a timing test.** `slotsight/scripts/measure_update_interval.py` runs a source at recorded speed through the full pipeline and reports the results to `docs/evaluation.md`. First run on this laptop (CPU only, synthetic 1080p footage): 0.09 s per frame, 4.05 s worst-case on-screen gap. The model now runs a warm-up inference when it loads, which removed a 1.7 s first-frame delay. *(R-04 evidence)*
 - [ ] **Re-run the timing test with real lot footage** (and a real camera stream, if available) to confirm R-04 under real conditions. *(R-04)*
 
 #### 1C. Dashboard and evidence (R-01, R-02, R-05, R-06, R-07, R-08)
@@ -94,6 +97,8 @@ Last updated: 2026-11-17, after Milestone 1B (inputs and live updates)
 - [ ] Camera-shift detection that warns when slot polygons no longer line up
 
 ## Review log
+
+File and line references in entries dated before the 2026-11-17 reorganization point at the old top-level layout. Those files now live under `slotsight/` (documents under `slotsight/docs/`), and line numbers have shifted since.
 
 ### 2026-11-17: Full code review against requirements (commit `6356d42`)
 
@@ -135,3 +140,4 @@ These were reproduced with the Flask test client, using YOLO `yolo11s.pt` with c
 | 2026-11-17 | Uploads take an optional "recorded at" start time. History `timestamp` = start + frame offset; without one, it's the processing time. Live frames always use capture time. | R-08's peak-time analysis and R-05's per-condition test sets need real-world times for recorded footage | User (Claude's recommendation) |
 | 2026-11-17 | Archive the demo-polluted history as `occupancy_history-2026-11-17.csv` and start a clean file with the new `frame_time_s` column. Older-format files are upgraded in place automatically. | Keeps old data without mixing about 78% demo rows into new exports | User (Claude's recommendation) |
 | 2026-11-17 | Only one frame source runs at a time; starting a new one stops the previous one | PRD scope is one camera and one lot | Claude (small and reversible; noted in the summary) |
+| 2026-11-17 | Reorganized the repository: only `README.md` and `.gitignore` (plus `.claude/` and the gitignored `.venv`) stay at the top level. Code, data and the model live in `slotsight/`, and documents in `slotsight/docs/`. `CLAUDE.md` moved to `.claude/CLAUDE.md`. | A cleaner top level. `.claude/CLAUDE.md` is still loaded automatically by Claude Code. The venv stays put because virtual environments break when moved. | User (layout options proposed by Claude) |

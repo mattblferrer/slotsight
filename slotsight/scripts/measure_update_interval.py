@@ -12,10 +12,10 @@ classification, snapshot and history write) and reports:
 
 Video files are played at recorded speed so they behave like a live camera.
 
-Usage (from the project folder):
-    python scripts/measure_update_interval.py footage.mp4 --seconds 120
-    python scripts/measure_update_interval.py rtsp://camera/stream --seconds 300 --write
-    python scripts/measure_update_interval.py 0 --seconds 60          # webcam 0
+Usage (from the repository root):
+    python slotsight/scripts/measure_update_interval.py footage.mp4 --seconds 120
+    python slotsight/scripts/measure_update_interval.py rtsp://camera/stream --seconds 300 --write
+    python slotsight/scripts/measure_update_interval.py 0 --seconds 60          # webcam 0
 
 History rows go to a temporary file unless --history is given, so a
 measurement never mixes into occupancy_history.csv.
@@ -58,7 +58,7 @@ def main() -> int:
     parser.add_argument("--seconds", type=float, default=60.0, help="how long to measure (default 60)")
     parser.add_argument("--history", help="CSV to record readings into (default: a temporary file)")
     parser.add_argument("--note", default="", help="free-text note for the report, e.g. 'daytime lot footage'")
-    parser.add_argument("--write", action="store_true", help="append the report to docs/evaluation.md")
+    parser.add_argument("--write", action="store_true", help="append the report to slotsight/docs/evaluation.md")
     args = parser.parse_args()
 
     slotsight.HISTORY_PATH = Path(args.history) if args.history else Path(tempfile.mkdtemp()) / "measure-history.csv"
