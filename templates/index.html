@@ -138,7 +138,7 @@
                 type="checkbox"
                 id="autoRefresh"
                 checked /><span></span></label
-            ><span id="refreshInterval">5s</span>
+            ><span id="refreshInterval">2s</span>
           </div>
         </aside>
       </section>
@@ -148,30 +148,55 @@
           <div class="panel-heading">
             <div>
               <p class="eyebrow">Input source</p>
-              <h2>Test a frame</h2>
+              <h2>Camera &amp; footage</h2>
             </div>
-            <span class="source-icon">IMG</span>
+            <span class="source-icon">CAM</span>
           </div>
           <p class="panel-copy">
-            Upload a parking-lot image to classify the configured polygons.
-            Without a detection model loaded, a demo feed keeps the dashboard
-            moving.
+            Upload a parking-lot image or video to classify the configured
+            polygons. Videos are sampled every few seconds of footage. Without
+            a detection model loaded, a demo feed keeps the dashboard moving.
           </p>
           <form id="uploadForm">
             <label class="upload-zone" for="sourceFile"
               ><span class="upload-plus">+</span
               ><span
-                ><strong>Drop an image here</strong
-                ><small>or browse from your device</small></span
+                ><strong>Drop an image or video here</strong
+                ><small>or browse from your device (up to 100 MB)</small></span
               ><input
                 id="sourceFile"
                 name="source"
                 type="file"
-                accept="image/*" /></label
+                accept="image/*,video/*" /></label
+            ><label class="config-field recorded-at" for="recordedAt">
+              <span>Footage recorded at (optional)</span>
+              <input id="recordedAt" type="datetime-local" step="1" />
+            </label
             ><button class="button button-accent" type="submit">
-              Process frame <span>&rarr;</span>
+              Process file <span>&rarr;</span>
             </button>
           </form>
+          <form class="live-source" id="liveSourceForm">
+            <label class="config-field" for="liveSourceInput">
+              <span>Live source</span>
+              <input
+                id="liveSourceInput"
+                placeholder="rtsp://camera/stream, 0 for a webcam, or C:\path\to\video.mp4"
+                autocomplete="off"
+              />
+            </label>
+            <div class="live-source-actions">
+              <label class="live-source-option"
+                ><input type="checkbox" id="liveRealtime" /> Play video files at
+                recorded speed</label
+              >
+              <button class="map-edit-button" type="submit">Start</button>
+              <button class="map-clear-button" type="button" id="stopSource" disabled>
+                Stop
+              </button>
+            </div>
+          </form>
+          <p class="job-status" id="jobStatus" hidden></p>
           <div class="frame-preview is-empty" id="framePreview">
             <img id="previewImage" alt="Annotated parking frame" />
             <span id="previewPlaceholder"

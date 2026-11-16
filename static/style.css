@@ -634,6 +634,45 @@ button {
   color: var(--muted);
   min-height: 14px;
 }
+.config-field.recorded-at {
+  margin: 12px 0 0;
+}
+.live-source {
+  margin-top: 6px;
+}
+.live-source .config-field {
+  margin-bottom: 8px;
+}
+.live-source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.live-source-option {
+  flex: 1 1 180px;
+  font: 10px var(--mono);
+  color: var(--muted);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.live-source-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.job-status {
+  margin: 12px 0 0;
+  padding: 9px 11px;
+  border-left: 3px solid var(--mint-dark);
+  background: #fbfcf9;
+  font: 10px/1.6 var(--mono);
+  color: var(--ink);
+}
+.job-status.is-error {
+  border-left-color: var(--red);
+  color: #a95d50;
+}
 .frame-preview {
   position: relative;
   min-height: 180px;

@@ -6,6 +6,9 @@ const state = {
   timer: null,
   editing: false,
 };
+// Dashboard poll interval. Sources sample every 2 s by default, so a change
+// reaches the screen within about 2 s + processing + 2 s, under R-04's 5 s.
+const POLL_MS = 2000;
 let thresholdTimer = null;
 const $ = (id) => document.getElementById(id);
 
@@ -183,6 +186,7 @@ function render(data) {
   $("lotNameHeading").textContent = state.lotName;
   renderMap(data);
   renderActivity(data);
+  if ("job" in data) renderJob(data.job);
   if (data.preview_image) {
     const preview = $("framePreview");
     $("previewImage").src = data.preview_image;
@@ -210,7 +214,54 @@ async function refresh() {
 
 function setTimer() {
   if (state.timer) clearInterval(state.timer);
-  if ($("autoRefresh").checked) state.timer = setInterval(refresh, 5000);
+  if ($("autoRefresh").checked) state.timer = setInterval(refresh, POLL_MS);
+}
+
+function seconds(value) {
+  return value == null ? "--" : `${Number(value).toFixed(2)} s`;
+}
+
+function renderJob(job) {
+  const line = $("jobStatus");
+  $("stopSource").disabled = !job || !["starting", "running"].includes(job.state);
+  if (!job) {
+    line.hidden = true;
+    return;
+  }
+  const perFrame = job.processing_s ? `${seconds(job.processing_s.mean)} per frame` : "";
+  const isFile = job.kind === "file";
+  const progress =
+    isFile && job.progress != null ? `${Math.round(job.progress * 100)}%` : "";
+  const parts = {
+    starting: [`Opening ${job.name}...`],
+    running: isFile
+      ? [`Processing ${job.name}`, progress, `${job.frames_processed} frames`, perFrame]
+      : [`Live: ${job.name}`, `every ${job.interval_s} s`, `last ${timeOnly(job.last_frame_at)}`, perFrame],
+    finished: [`Finished ${job.name}`, `${job.frames_processed} frames logged`],
+    stopped: [`Stopped ${job.name}`, `${job.frames_processed} frames logged`],
+    error: [`Source error: ${job.error}`],
+  }[job.state] || [job.state];
+  line.textContent = parts.filter(Boolean).join(" / ");
+  line.classList.toggle("is-error", job.state === "error");
+  line.hidden = false;
+}
+
+// Optional real-world start time of uploaded footage, sent as UTC ISO 8601.
+// Rows for a video then carry start + frame offset as their timestamp.
+function recordedAtIso() {
+  const value = $("recordedAt").value;
+  return value ? new Date(value).toISOString() : "";
+}
+
+async function postSource(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Request failed.");
+  return data;
 }
 
 $("refreshButton").addEventListener("click", refresh);
@@ -350,17 +401,51 @@ $("uploadForm").addEventListener("submit", async (event) => {
     : "Refreshing latest reading...";
   const formData = new FormData();
   if (file) formData.append("source", file);
-  const response = await fetch("/api/process", {
-    method: "POST",
-    body: formData,
-  });
-  const data = await response.json();
-  if (response.ok) {
-    render(data);
-    message.textContent = file
-      ? "Reading logged at " + timeOnly(data.updated_at)
-      : "Showing the latest reading (nothing new logged).";
-  } else message.textContent = data.error || "Processing failed.";
+  if (file && recordedAtIso()) formData.append("recorded_at", recordedAtIso());
+  try {
+    const response = await fetch("/api/process", {
+      method: "POST",
+      body: formData,
+    });
+    const data = await response.json();
+    if (response.status === 202) {
+      // A video: it is sampled in the background and progress arrives with each poll.
+      renderJob(data.job);
+      message.textContent = data.message;
+    } else if (response.ok) {
+      render(data);
+      message.textContent = file
+        ? "Reading logged at " + timeOnly(data.updated_at)
+        : "Showing the latest reading (nothing new logged).";
+    } else message.textContent = data.error || "Processing failed.";
+  } catch (error) {
+    message.textContent = "Processing failed. Is the file under 100 MB?";
+  }
+});
+
+$("liveSourceForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const message = $("formMessage");
+  try {
+    const data = await postSource("/api/source", {
+      target: $("liveSourceInput").value,
+      realtime: $("liveRealtime").checked,
+      recorded_at: recordedAtIso(),
+    });
+    renderJob(data.job);
+    message.textContent = data.message;
+  } catch (error) {
+    message.textContent = error.message;
+  }
+});
+
+$("stopSource").addEventListener("click", async () => {
+  try {
+    const data = await postSource("/api/source/stop", {});
+    renderJob(data.job);
+  } catch (error) {
+    $("formMessage").textContent = error.message;
+  }
 });
 
 $("openConfig").addEventListener("click", async () => {

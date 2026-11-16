@@ -14,18 +14,18 @@ The working plan for SlotSight: where the project stands against its requirement
 
 ## Requirement status
 
-Last updated: 2026-11-17, after Milestone 1A (correctness fixes)
+Last updated: 2026-11-17, after Milestone 1B (inputs and live updates)
 
 | ID | Requirement | Status | Current gap |
 | --- | --- | --- | --- |
 | R-01 | Classify each slot occupied/vacant (≥90% per-slot accuracy) | ⚠️ Partial | Classification is now real (1A fixed the fake-results bug and the overlap check). No ground-truth evaluation yet (1C). |
 | R-02 | Report total free slots (matches ground truth in ≥90% of frames) | ⚠️ Partial | Count is computed from real classifications. No evaluation yet (1C). |
-| R-03 | Accept a video file or live stream plus a slot-polygon config, and output timestamped statuses | ⚠️ Partial | Polygon config works. Video is reduced to frame 1. The upload field only accepts images. No live stream. |
-| R-04 | Status updates at least every 5 s | ⚠️ Partial | The UI polls every 5 s, but nothing processes new frames. No timing test. |
+| R-03 | Accept a video file or live stream plus a slot-polygon config, and output timestamped statuses | ✅ Met | Videos are sampled end to end and live streams/cameras are read continuously, both producing timestamped per-slot rows (1B). Tested with synthetic footage and a simulated stream; not yet with a real RTSP camera. |
+| R-04 | Status updates at least every 5 s | ✅ Met (provisional) | Worst-case on-screen update gap 4.05 s on the target laptop, CPU only (`docs/evaluation.md`). Measured on synthetic 1080p footage; re-run with real lot footage. |
 | R-05 | Evening/rain accuracy ≥90% of daytime | ❌ No evidence | No labeled test sets per condition. No evaluation. |
 | R-06 | Lot map shows each slot's status and time of last update | ⚠️ Partial | Map polygons are transparent, so status shows only on hover or in the uploaded preview image. |
 | R-07 | Low-confidence slots show "unknown" | ⚠️ Partial | Vacant confidence now drops with weak or partial detections (1A). Not yet tested on real occluded cases (1C). |
-| R-08 | Export history as CSV/Excel with slot ID, status and timestamp | ✅ Met, with one issue | New rows come only from processed frames (1A). The existing `occupancy_history.csv` still holds old demo rows (1C). |
+| R-08 | Export history as CSV/Excel with slot ID, status and timestamp | ✅ Met | New rows come only from processed frames (1A). The demo-polluted history was archived and a clean file started (1B). Video rows also carry `frame_time_s`, and a real-world time when a recording start is given. |
 
 ### Definition of done
 
@@ -55,10 +55,11 @@ Last updated: 2026-11-17, after Milestone 1A (correctness fixes)
 
 #### 1B. Inputs and live updates (R-03, R-04)
 
-- [ ] **Process the whole video.** Sample frames every N seconds of video time, configured as `sample_interval_s` with a default of 1–5 s. Log one set of rows per sampled frame, with the frame's *video timestamp* and the processing timestamp.
-- [ ] **Add a live source.** Add a background worker that reads an RTSP/HTTP stream or webcam index (`cv2.VideoCapture(url)`), processes a frame at least every 5 s, updates the latest snapshot and appends history. Expose start/stop through the API and a UI control.
-- [ ] **Let the upload field accept video** (`accept="image/*,video/*"`) and show progress or a summary for multi-frame jobs.
-- [ ] **Add a timing test.** Measure the time from frame capture to a dashboard-visible update on the target laptop (CPU-only and GPU if available). Record the results in `docs/evaluation.md`. *(R-04 evidence)*
+- [x] **Process the whole video.** Frames are sampled every `sample_interval_s` seconds of video time (default 2 s) in a background job (`sources.py`). Each sampled frame logs one row per slot with its video offset (`frame_time_s`). With an optional "recorded at" start time, `timestamp` = start + offset.
+- [x] **Add a live source.** `SourceWorker` reads an RTSP/HTTP URL, webcam index or local video path, drains frames continuously, processes one every `sample_interval_s` seconds, and reconnects up to 5 times after dropouts. The API is `POST /api/source`, `POST /api/source/stop` and `GET /api/source`, with matching UI controls. Stream credentials are removed from displayed and logged names. Inference runs outside the state lock, so status polls stay fast (≤20 ms measured during processing).
+- [x] **Let the upload field accept video** (`accept="image/*,video/*"`). Job progress, frame count and per-frame processing time show under the source panel.
+- [x] **Add a timing test.** `scripts/measure_update_interval.py` runs a source at recorded speed through the full pipeline and reports the results to `docs/evaluation.md`. First run on this laptop (CPU only, synthetic 1080p footage): 0.09 s per frame, 4.05 s worst-case on-screen gap. The model now runs a warm-up inference when it loads, which removed a 1.7 s first-frame delay. *(R-04 evidence)*
+- [ ] **Re-run the timing test with real lot footage** (and a real camera stream, if available) to confirm R-04 under real conditions. *(R-04)*
 
 #### 1C. Dashboard and evidence (R-01, R-02, R-05, R-06, R-07, R-08)
 
@@ -72,7 +73,7 @@ Last updated: 2026-11-17, after Milestone 1A (correctness fixes)
   *(R-01, R-02, R-05, R-07 evidence)*
 - [ ] **Collect and label a reference test set** from the target lot, covering daytime, evening and rain, and including partly hidden cases. Store the labels (not raw video) in the repo.
 - [ ] **Tune `review_threshold` and `overlap_threshold`** on a held-out split and record the chosen values and their results.
-- [ ] **Fix the R-08 data issue.** Clean or rotate the existing demo-polluted `occupancy_history.csv`. Make sure exports contain only processed-frame rows, or mark the source clearly. *(R-08)*
+- [x] **Fix the R-08 data issue.** The old file was archived as `occupancy_history-2026-11-17.csv` (gitignored) and a clean file in the new format starts on the next run. *(R-08)*
 
 ### Milestone 2: Hardening and improvements (after Milestone 1)
 
@@ -124,9 +125,13 @@ These were reproduced with the Flask test client, using YOLO `yolo11s.pt` with c
 
 ## Decisions log
 
-| Date | Decision | Reason |
-| --- | --- | --- |
-| 2026-11-17 | Meet R-01 to R-08 before working on improvements | The 2026-11-17 review found that no requirement is fully met, and the core classifier can return fake data |
-| 2026-11-17 | Demo data appears only when no model is loaded and no frame is supplied, and is never logged | Fake readings must never be mistaken for real ones, on screen or in exports |
-| 2026-11-17 | Overlap ratio = max(intersection / slot area, intersection / box area), default threshold 0.4 | Slot-only ratios miss motorcycles in full-size slots. Box-only ratios miss large vehicles over small, distant slots. Final values get tuned in 1C. |
-| 2026-11-17 | Partial or weak detections lower vacant confidence instead of being ignored | Wrong "free" readings are the costly error (R-07), so doubt should show as "unknown" |
+| Date | Decision | Reason | Decided by |
+| --- | --- | --- | --- |
+| 2026-11-17 | Meet R-01 to R-08 before working on improvements | The 2026-11-17 review found that no requirement is fully met, and the core classifier can return fake data | User |
+| 2026-11-17 | Demo data appears only when no model is loaded and no frame is supplied, and is never logged | Fake readings must never be mistaken for real ones, on screen or in exports | Claude (1A, before the ask-first rule) |
+| 2026-11-17 | Overlap ratio = max(intersection / slot area, intersection / box area), default threshold 0.4 | Slot-only ratios miss motorcycles in full-size slots. Box-only ratios miss large vehicles over small, distant slots. Final values get tuned in 1C. | Claude (1A, before the ask-first rule) |
+| 2026-11-17 | Partial or weak detections lower vacant confidence instead of being ignored | Wrong "free" readings are the costly error (R-07), so doubt should show as "unknown" | Claude (1A, before the ask-first rule) |
+| 2026-11-17 | R-04 is measured end to end on screen: sampling + processing + dashboard polling. Sources sample every 2 s and the dashboard polls every 2 s. | This matches what the operator actually sees and the requirement's "near real-time" rationale. 4.05 s worst case measured on the target laptop. | User (Claude's recommendation) |
+| 2026-11-17 | Uploads take an optional "recorded at" start time. History `timestamp` = start + frame offset; without one, it's the processing time. Live frames always use capture time. | R-08's peak-time analysis and R-05's per-condition test sets need real-world times for recorded footage | User (Claude's recommendation) |
+| 2026-11-17 | Archive the demo-polluted history as `occupancy_history-2026-11-17.csv` and start a clean file with the new `frame_time_s` column. Older-format files are upgraded in place automatically. | Keeps old data without mixing about 78% demo rows into new exports | User (Claude's recommendation) |
+| 2026-11-17 | Only one frame source runs at a time; starting a new one stops the previous one | PRD scope is one camera and one lot | Claude (small and reversible; noted in the summary) |

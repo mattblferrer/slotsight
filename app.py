@@ -8,13 +8,15 @@ import os
 import tempfile
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
 from flask import Flask, jsonify, render_template, request, send_file
+
+from sources import SourceWorker, parse_target
 
 try:
     from ultralytics import YOLO
@@ -29,6 +31,11 @@ DEFAULT_LOT_NAME = "Lot 01"
 DEFAULT_REVIEW_THRESHOLD = 0.7
 DEFAULT_OVERLAP_THRESHOLD = 0.4
 DEFAULT_MODEL_PATH = "yolo11s.pt"
+# Seconds between sampled frames (video time for files, wall-clock time for live sources).
+# With the dashboard polling every 2 s this keeps updates within R-04's 5 s.
+DEFAULT_SAMPLE_INTERVAL_S = 2.0
+SAMPLE_INTERVAL_RANGE_S = (0.2, 60.0)
+HISTORY_COLUMNS = ["timestamp", "slot_id", "status", "confidence", "source", "frame_time_s"]
 VEHICLE_CLASS_IDS = (2, 3, 5, 7)  # COCO: car, motorcycle, bus, truck
 # Keep weak detections: they should push a slot to "unknown" rather than read as free (R-07).
 DETECTION_CONFIDENCE_FLOOR = 0.1
@@ -50,7 +57,11 @@ app = Flask(
     static_folder=str(BASE_DIR / "static"),
     static_url_path="/static",
 )
-state_lock = threading.Lock()
+state_lock = threading.Lock()  # guards the latest_frame_* globals and history writes
+model_lock = threading.Lock()  # guards loading the model
+inference_lock = threading.Lock()  # one inference at a time; the model is shared across threads
+source_lock = threading.Lock()  # guards active_source
+active_source: SourceWorker | None = None
 model = None
 model_loaded_path: Path | None = None
 model_failed_path: Path | None = None
@@ -58,6 +69,8 @@ latest_frame_snapshot: dict[str, Any] | None = None
 latest_frame = None
 latest_frame_detections = None
 latest_frame_source = "latest frame"
+latest_frame_time_s: float | None = None
+latest_frame_captured_at: datetime | None = None
 
 DEFAULT_SLOTS = [
     {"id": "A01", "points": [[12, 18], [27, 17], [29, 39], [13, 40]]},
@@ -77,6 +90,20 @@ DEFAULT_SLOTS = [
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def parse_recorded_at(value: Any) -> datetime | None:
+    """Parse an optional ISO 8601 "recorded at" time into UTC; naive times are taken as local time."""
+    if value is None or str(value).strip() == "":
+        return None
+    return datetime.fromisoformat(str(value).strip()).astimezone(timezone.utc)
+
+
+def capture_time(recorded_at: datetime | None, frame_time_s: float | None) -> datetime | None:
+    """Real-world capture time of a video frame: recording start plus its offset."""
+    if recorded_at is None:
+        return None
+    return recorded_at + timedelta(seconds=frame_time_s or 0.0)
 
 
 def load_slots() -> list[dict[str, Any]]:
@@ -102,6 +129,15 @@ def unit_interval(value: Any, default: float) -> float:
     return max(0.0, min(1.0, number))
 
 
+def sample_interval(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SAMPLE_INTERVAL_S
+    low, high = SAMPLE_INTERVAL_RANGE_S
+    return max(low, min(high, number))
+
+
 def load_settings() -> dict[str, Any]:
     settings: dict[str, Any] = {}
     if SETTINGS_PATH.exists():
@@ -116,6 +152,7 @@ def load_settings() -> dict[str, Any]:
         "lot_name": str(settings.get("lot_name") or DEFAULT_LOT_NAME).strip()[:80],
         "review_threshold": unit_interval(settings.get("review_threshold"), DEFAULT_REVIEW_THRESHOLD),
         "overlap_threshold": unit_interval(settings.get("overlap_threshold"), DEFAULT_OVERLAP_THRESHOLD),
+        "sample_interval_s": sample_interval(settings.get("sample_interval_s")),
         "model_path": str(settings.get("model_path") or DEFAULT_MODEL_PATH),
     }
     if not SETTINGS_PATH.exists() or set(normalized) - set(settings):
@@ -131,18 +168,41 @@ def save_settings(**updates: Any) -> dict[str, Any]:
 
 
 def ensure_history() -> None:
+    """Create the history file, or upgrade an older one to the current columns."""
     if not HISTORY_PATH.exists():
         with HISTORY_PATH.open("w", newline="", encoding="utf-8") as file:
-            csv.writer(file).writerow(["timestamp", "slot_id", "status", "confidence", "source"])
+            csv.writer(file).writerow(HISTORY_COLUMNS)
+        return
+    with HISTORY_PATH.open(newline="", encoding="utf-8") as file:
+        reader = csv.DictReader(file)
+        if reader.fieldnames == HISTORY_COLUMNS:
+            return
+        rows = list(reader)
+    with HISTORY_PATH.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=HISTORY_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
 
 
-def append_history(results: list[dict[str, Any]], source: str) -> None:
+def append_history(
+    results: list[dict[str, Any]],
+    source: str,
+    frame_time_s: float | None = None,
+    captured_at: datetime | None = None,
+) -> None:
+    """Append one row per slot.
+
+    timestamp is when the frame was captured if known (recording start + offset for
+    footage with a "recorded at" time), otherwise when it was processed.
+    frame_time_s is the frame's position in a video file, if any.
+    """
     ensure_history()
     with HISTORY_PATH.open("a", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
-        timestamp = now_iso()
+        timestamp = captured_at.isoformat(timespec="seconds") if captured_at else now_iso()
+        offset = "" if frame_time_s is None else f"{frame_time_s:.2f}"
         for result in results:
-            writer.writerow([timestamp, result["id"], result["status"], result["confidence"], source])
+            writer.writerow([timestamp, result["id"], result["status"], result["confidence"], source, offset])
 
 
 def resolve_model_path() -> Path:
@@ -155,18 +215,25 @@ def get_model():
     """Return the loaded detector, reloading it when the configured path changes."""
     global model, model_loaded_path, model_failed_path
     path = resolve_model_path()
-    if model is not None and model_loaded_path == path:
+    current = model
+    if current is not None and model_loaded_path == path:
+        return current
+    with model_lock:
+        if model is not None and model_loaded_path == path:
+            return model
+        model, model_loaded_path = None, None
+        if YOLO is None or not path.exists() or model_failed_path == path:
+            return None
+        try:
+            loaded = YOLO(str(path))
+            # The first inference is several times slower (lazy setup); pay it at load
+            # time rather than on the first real frame, so it never delays an update (R-04).
+            loaded(np.zeros((640, 640, 3), dtype=np.uint8), verbose=False)
+            model, model_loaded_path = loaded, path
+        except Exception:
+            app.logger.exception("Could not load detection model from %s", path)
+            model_failed_path = path
         return model
-    model, model_loaded_path = None, None
-    if YOLO is None or not path.exists() or model_failed_path == path:
-        return None
-    try:
-        model = YOLO(str(path))
-        model_loaded_path = path
-    except Exception:
-        app.logger.exception("Could not load detection model from %s", path)
-        model_failed_path = path
-    return model
 
 
 def detect_vehicles(frame) -> list[tuple[float, float, float, float, float]]:
@@ -182,7 +249,8 @@ def detect_vehicles(frame) -> list[tuple[float, float, float, float, float]]:
             status_code=503,
         )
     try:
-        prediction = detector(frame, verbose=False, conf=DETECTION_CONFIDENCE_FLOOR, classes=list(VEHICLE_CLASS_IDS))[0]
+        with inference_lock:
+            prediction = detector(frame, verbose=False, conf=DETECTION_CONFIDENCE_FLOOR, classes=list(VEHICLE_CLASS_IDS))[0]
         boxes = zip(prediction.boxes.xyxy.tolist(), prediction.boxes.conf.tolist(), prediction.boxes.cls.tolist())
         return [(*box, float(confidence)) for box, confidence, class_id in boxes if int(class_id) in VEHICLE_CLASS_IDS]
     except Exception as error:
@@ -276,7 +344,14 @@ def annotate_frame(frame, slots: list[dict[str, Any]], results: list[dict[str, A
     return "data:image/jpeg;base64," + base64.b64encode(buffer).decode("ascii")
 
 
-def snapshot(frame=None, source: str | None = None, detections=None, record: bool = False) -> dict[str, Any]:
+def snapshot(
+    frame=None,
+    source: str | None = None,
+    detections=None,
+    record: bool = False,
+    frame_time_s: float | None = None,
+    captured_at: datetime | None = None,
+) -> dict[str, Any]:
     """Build the dashboard payload.
 
     With a frame: classify it from `detections` (detected here if not given) and,
@@ -302,7 +377,7 @@ def snapshot(frame=None, source: str | None = None, detections=None, record: boo
         if result["confidence"] < review_threshold:
             result["status"] = "unknown"
     if record:
-        append_history(results, source)
+        append_history(results, source, frame_time_s, captured_at)
     occupied = sum(result["status"] == "occupied" for result in results)
     unknown = sum(result["status"] == "unknown" for result in results)
     for result, slot in zip(results, slots):
@@ -314,6 +389,8 @@ def snapshot(frame=None, source: str | None = None, detections=None, record: boo
         "unknown": unknown,
         "updated_at": now_iso(),
         "source": source,
+        "frame_time_s": None if frame_time_s is None else round(frame_time_s, 2),
+        "captured_at": captured_at.isoformat(timespec="seconds") if captured_at else None,
         "model": "YOLO" if has_model else "demo classifier",
         "lot_name": settings["lot_name"],
         "review_threshold": review_threshold,
@@ -331,7 +408,79 @@ def reclassify_latest_frame() -> None:
     """
     global latest_frame_snapshot
     if latest_frame is not None:
-        latest_frame_snapshot = snapshot(latest_frame, latest_frame_source, latest_frame_detections)
+        latest_frame_snapshot = snapshot(
+            latest_frame,
+            latest_frame_source,
+            latest_frame_detections,
+            frame_time_s=latest_frame_time_s,
+            captured_at=latest_frame_captured_at,
+        )
+
+
+def store_reading(
+    frame,
+    source: str,
+    detections,
+    frame_time_s: float | None = None,
+    captured_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Make `frame` the latest reading and append it to the history. Caller holds state_lock."""
+    global latest_frame_snapshot, latest_frame, latest_frame_detections, latest_frame_source
+    global latest_frame_time_s, latest_frame_captured_at
+    latest_frame = frame
+    latest_frame_detections = detections
+    latest_frame_source = source
+    latest_frame_time_s = frame_time_s
+    latest_frame_captured_at = captured_at
+    latest_frame_snapshot = snapshot(
+        frame, source, detections, record=True, frame_time_s=frame_time_s, captured_at=captured_at
+    )
+    return latest_frame_snapshot
+
+
+def frame_handler(source_name: str, recorded_at: datetime | None = None):
+    """Callback for SourceWorker: detect outside state_lock so status polls never wait on inference."""
+
+    def on_frame(frame, frame_time_s: float | None) -> None:
+        detections = detect_vehicles(frame)
+        with state_lock:
+            store_reading(frame, source_name, detections, frame_time_s, capture_time(recorded_at, frame_time_s))
+
+    return on_frame
+
+
+def start_source(
+    kind: str,
+    target: str | int,
+    name: str,
+    realtime: bool = False,
+    cleanup_path: str | None = None,
+    recorded_at: datetime | None = None,
+) -> SourceWorker:
+    """Stop any running source and start reading a new one (one camera, one lot)."""
+    global active_source
+    with source_lock:
+        if active_source is not None:
+            active_source.stop()
+        active_source = SourceWorker(
+            kind,
+            target,
+            name,
+            load_settings()["sample_interval_s"],
+            frame_handler(name, recorded_at),
+            realtime=realtime,
+            cleanup_path=cleanup_path,
+        ).start()
+        return active_source
+
+
+def source_status() -> dict[str, Any] | None:
+    worker = active_source
+    return worker.status() if worker is not None else None
+
+
+def model_unavailable():
+    return jsonify({"error": "No detection model is loaded. Install ultralytics and set model_path in settings.txt."}), 503
 
 
 @app.get("/")
@@ -342,9 +491,8 @@ def index():
 @app.get("/api/status")
 def status():
     with state_lock:
-        if latest_frame_snapshot is not None:
-            return jsonify(latest_frame_snapshot)
-        return jsonify(snapshot())
+        payload = latest_frame_snapshot if latest_frame_snapshot is not None else snapshot()
+    return jsonify({**payload, "job": source_status()})
 
 
 @app.post("/api/config")
@@ -396,38 +544,90 @@ def review_threshold():
         return jsonify(latest_frame_snapshot if latest_frame_snapshot is not None else snapshot())
 
 
+def is_readable_video(path: str) -> bool:
+    video = cv2.VideoCapture(path)
+    try:
+        ok, frame = video.read()
+        return bool(ok) and frame is not None
+    finally:
+        video.release()
+
+
 @app.post("/api/process")
 def process():
-    global latest_frame_snapshot, latest_frame, latest_frame_detections, latest_frame_source
+    """Process an uploaded image now, or start a background job that samples an uploaded video."""
     uploaded = request.files.get("source")
     if uploaded is None or not uploaded.filename:
         with state_lock:
-            return jsonify(latest_frame_snapshot if latest_frame_snapshot is not None else snapshot())
+            payload = latest_frame_snapshot if latest_frame_snapshot is not None else snapshot()
+        return jsonify({**payload, "job": source_status()})
     if uploaded.content_length and uploaded.content_length > 100 * 1024 * 1024:
         return jsonify({"error": "Files must be smaller than 100 MB."}), 413
+    try:
+        recorded_at = parse_recorded_at(request.form.get("recorded_at"))
+    except ValueError:
+        return jsonify({"error": "Recorded-at must be a date and time, e.g. 2026-11-17T08:30."}), 400
     raw = uploaded.read()
     frame = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
-        suffix = Path(uploaded.filename).suffix or ".mp4"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as temporary_file:
-            temporary_file.write(raw)
-            temporary_file.flush()
-            video = cv2.VideoCapture(temporary_file.name)
-            success, frame = video.read()
-            video.release()
-    if frame is None:
-        return jsonify({"error": "Upload a readable image or video file."}), 400
+        return process_video_upload(uploaded.filename, raw, recorded_at)
+    try:
+        detections = detect_vehicles(frame)
+    except DetectionError as error:
+        app.logger.exception("Could not process %s", uploaded.filename)
+        return jsonify({"error": str(error)}), error.status_code
     with state_lock:
-        try:
-            detections = detect_vehicles(frame)
-        except DetectionError as error:
-            app.logger.exception("Could not process %s", uploaded.filename)
-            return jsonify({"error": str(error)}), error.status_code
-        latest_frame = frame
-        latest_frame_detections = detections
-        latest_frame_source = uploaded.filename
-        latest_frame_snapshot = snapshot(frame, uploaded.filename, detections, record=True)
-        return jsonify(latest_frame_snapshot)
+        payload = store_reading(frame, uploaded.filename, detections, captured_at=recorded_at)
+    return jsonify({**payload, "job": source_status()})
+
+
+def process_video_upload(filename: str, raw: bytes, recorded_at: datetime | None = None):
+    """Save the upload to a temporary file and sample it in the background (R-03)."""
+    descriptor, path = tempfile.mkstemp(prefix="slotsight-", suffix=Path(filename).suffix or ".mp4")
+    with os.fdopen(descriptor, "wb") as file:
+        file.write(raw)
+    if not is_readable_video(path):
+        Path(path).unlink(missing_ok=True)
+        return jsonify({"error": "Upload a readable image or video file."}), 400
+    if get_model() is None:
+        Path(path).unlink(missing_ok=True)
+        return model_unavailable()
+    worker = start_source("file", path, filename, cleanup_path=path, recorded_at=recorded_at)
+    interval = worker.interval_s
+    return jsonify({"job": worker.status(), "message": f"Processing {filename}: one frame every {interval:g} s of video."}), 202
+
+
+@app.get("/api/source")
+def get_source():
+    return jsonify({"job": source_status()})
+
+
+@app.post("/api/source")
+def set_source():
+    """Start reading a live stream URL, a camera index, or a video file on this machine (R-03, R-04)."""
+    payload = request.get_json(silent=True) or {}
+    try:
+        kind, target, name = parse_target(str(payload.get("target", "")))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    try:
+        # Only recorded files have a start time; live frames are captured as they arrive.
+        recorded_at = parse_recorded_at(payload.get("recorded_at")) if kind == "file" else None
+    except ValueError:
+        return jsonify({"error": "Recorded-at must be a date and time, e.g. 2026-11-17T08:30."}), 400
+    if get_model() is None:
+        return model_unavailable()
+    worker = start_source(kind, target, name, realtime=bool(payload.get("realtime")), recorded_at=recorded_at)
+    return jsonify({"job": worker.status(), "message": f"Reading {name}: one frame every {worker.interval_s:g} s."}), 202
+
+
+@app.post("/api/source/stop")
+def stop_source():
+    with source_lock:
+        worker = active_source
+        if worker is not None:
+            worker.stop()
+    return jsonify({"job": source_status()})
 
 
 @app.get("/api/history.csv")
