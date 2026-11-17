@@ -55,8 +55,9 @@ slotsight/
   static/, templates/      dashboard UI
   scripts/                 model installer (models.py) and the R-04 timing test
   tests/                   pytest suite (python -m pytest slotsight/tests)
-  eval/                    accuracy evaluation: evaluate.py and labels.csv
-  docs/                    requirements.md, PLAN.md, evaluation.md
+  labeling.py              reading and saving hand labels (the /label page)
+  eval/                    accuracy evaluation: extract_frames.py, evaluate.py, labels.csv
+  docs/                    requirements.md, PLAN.md, evaluation.md, recording-guide.md
 ```
 
 ## Inputs
@@ -115,11 +116,17 @@ This plays the source at recorded speed through the full pipeline, reports proce
 
 ## Measuring accuracy
 
+The full procedure, from recording the lot to reporting the evidence, is in [`slotsight/docs/recording-guide.md`](slotsight/docs/recording-guide.md). In short:
+
 ```powershell
-python slotsight/eval/evaluate.py --note "first labeled set" --write
+python slotsight/eval/extract_frames.py lot-morning.mp4 --condition daytime        # frames for labeling
+python slotsight/eval/extract_frames.py lot-rain.mp4 --condition rain --set tune   # kept apart for tuning
+# label them at http://127.0.0.1:5000/label
+python slotsight/eval/evaluate.py --only "tune/*" --overlap-threshold 0.5          # tune
+python slotsight/eval/evaluate.py --exclude "tune/*" --note "test sessions" --write # report
 ```
 
-This scores the dashboard's readings against hand-labeled frames for R-01 (per-slot accuracy), R-02 (free-count match), R-05 (evening and rain against daytime) and R-07 (occluded slots must be correct or unknown, never a wrong reading). Put the frame images in `slotsight/data/eval_frames/` (not tracked) and label them in `slotsight/eval/labels.csv`, one row per slot per frame:
+The evaluation scores the classifier against hand-labeled frames for R-01 (per-slot accuracy), R-02 (free-count match), R-05 (evening and rain against daytime) and R-07 (occluded slots must be correct or unknown, never a wrong reading). Frames go in `slotsight/data/eval_frames/<set>/<session>/` (not tracked). The **Label frames** page (`/label`, linked under Export history) shows each frame with the slot layout: click a slot to set it occupied or vacant, shift-click to mark it partly hidden, and press Enter to save and move on. Labels are saved to `slotsight/eval/labels.csv`, one row per slot per frame:
 
 ```text
 frame,slot_id,true_status,condition,occluded

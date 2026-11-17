@@ -31,6 +31,8 @@ Usage (from the repository root):
     python slotsight/eval/evaluate.py --labels my_labels.csv --frames-dir D:/lot-frames
     python slotsight/eval/evaluate.py --overlap-threshold 0.5 --review-threshold 0.6
     python slotsight/eval/evaluate.py --note "first labeled set" --write
+    python slotsight/eval/evaluate.py --exclude "tune/*" --write        # report on test sessions only
+    python slotsight/eval/evaluate.py --only "tune/*" --overlap-threshold 0.5   # tune on tune sessions
 
 Detections are cached in slotsight/data/eval_cache.json (keyed by model, file
 and file modification time), so re-running with other thresholds does not
@@ -53,9 +55,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import app as slotsight  # noqa: E402
+import labeling  # noqa: E402
 
-LABEL_COLUMNS = ["frame", "slot_id", "true_status", "condition", "occluded"]
-TRUE_STATUSES = ("occupied", "vacant")
+LABEL_COLUMNS = labeling.LABEL_COLUMNS
+TRUE_STATUSES = labeling.TRUE_STATUSES
 BASELINE_CONDITION = "daytime"
 COMPARED_CONDITIONS = ("evening", "rain")
 ACCURACY_TARGET = 0.90  # R-01, R-02
@@ -150,6 +153,24 @@ def read_labels(path: Path, slot_ids: list[str]) -> list[Label]:
     if not labels:
         raise LabelError(f"{path.name} has no labeled rows yet. See the docstring of this script for the format.")
     return labels
+
+
+def select_frames(labels: list[Label], only: list[str], exclude: list[str]) -> list[Label]:
+    """Keep labels whose frame path matches any `only` pattern (if given) and no `exclude` pattern.
+
+    Patterns are shell-style (fnmatch) on the frame path, e.g. "tune/*" or "test/2026-11-20-*".
+    """
+    from fnmatch import fnmatchcase
+
+    kept = [
+        label
+        for label in labels
+        if (not only or any(fnmatchcase(label.frame, pattern) for pattern in only))
+        and not any(fnmatchcase(label.frame, pattern) for pattern in exclude)
+    ]
+    if not kept:
+        raise LabelError("No labeled frames match --only/--exclude.")
+    return kept
 
 
 def frame_path(frames_dir: Path, frame: str) -> Path:
@@ -445,6 +466,8 @@ def main() -> int:
     parser.add_argument("--overlap-threshold", type=float, help="override overlap_threshold from settings.txt")
     parser.add_argument("--review-threshold", type=float, help="override review_threshold from settings.txt")
     parser.add_argument("--predictions", type=Path, default=DEFAULT_PREDICTIONS, help="per-row results CSV")
+    parser.add_argument("--only", action="append", default=[], metavar="PATTERN", help="score only frames matching this pattern, e.g. 'tune/*' (repeatable)")
+    parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN", help="leave out frames matching this pattern, e.g. 'tune/*' (repeatable)")
     parser.add_argument("--no-cache", action="store_true", help="re-run detection on every frame")
     parser.add_argument("--note", default="", help="free-text note for the report, e.g. 'week 1 labels'")
     parser.add_argument("--write", action="store_true", help="add the report to slotsight/docs/evaluation.md")
@@ -457,7 +480,7 @@ def main() -> int:
     overlap = settings["overlap_threshold"] if args.overlap_threshold is None else args.overlap_threshold
     review = settings["review_threshold"] if args.review_threshold is None else args.review_threshold
     try:
-        labels = read_labels(args.labels, slot_ids)
+        labels = select_frames(read_labels(args.labels, slot_ids), args.only, args.exclude)
         # A cache miss with no model loaded raises DetectionError below.
         outcomes = run_pipeline(labels, slots, args.frames_dir, overlap, review, None if args.no_cache else DEFAULT_CACHE)
     except LabelError as error:
@@ -471,7 +494,7 @@ def main() -> int:
     report = render_report(
         results,
         {
-            "labels": args.labels.name,
+            "labels": args.labels.name + "".join(f" --only {p}" for p in args.only) + "".join(f" --exclude {p}" for p in args.exclude),
             "note": args.note,
             "slot_ids": slot_ids,
             "model": slotsight.model_status()["name"],

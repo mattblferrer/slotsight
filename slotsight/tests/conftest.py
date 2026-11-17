@@ -59,6 +59,8 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(slotsight_app, "REFERENCE_PATH", tmp_path / "config" / "reference_frame.jpg")
     monkeypatch.setattr(slotsight_app, "camera", CameraMonitor(tmp_path / "config" / "reference_frame.jpg"))
     monkeypatch.setattr(slotsight_app, "tracker", SlotTracker())
+    monkeypatch.setattr(slotsight_app, "LABELS_PATH", tmp_path / "eval" / "labels.csv")
+    monkeypatch.setattr(slotsight_app, "EVAL_FRAMES_DIR", tmp_path / "data" / "eval_frames")
     for name in (
         "latest_frame_snapshot",
         "latest_frame",

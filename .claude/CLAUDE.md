@@ -41,7 +41,10 @@ Only `README.md`, `.gitignore` and this `.claude/` folder sit at the top level. 
 - `slotsight/models/`: downloaded weights, all gitignored except `README.md` (model list and licences, including Ultralytics' AGPL-3.0). The default `ultralytics/yolo11s` downloads on first run (`prepare_model()` in `__main__`, only in the reloader's serving process). Other models install from the dashboard or `scripts/models.py`.
 - `slotsight/scripts/measure_update_interval.py`: the R-04 timing test
 - `slotsight/scripts/models.py`: `list`, `install <id>`, `use <id>` for detection models
-- `slotsight/eval/evaluate.py`: the accuracy harness (R-01, R-02, R-05, R-07). Labels live in `slotsight/eval/labels.csv` (tracked). Frames go in `slotsight/data/eval_frames/`, and the detection cache and per-row results are `data/eval_cache.json` and `data/eval_predictions.csv`. All three are gitignored.
+- `slotsight/labeling.py`: reading and saving `eval/labels.csv` for the `/label` page (atomic rewrite, one frame's rows replaced per save; frame paths confined to `data/eval_frames/`)
+- `slotsight/eval/extract_frames.py`: frames every N seconds from a recording into `data/eval_frames/<test|tune>/<session>/` with a `session.json`; refuses to split a session between tune and test
+- `slotsight/docs/recording-guide.md`: how to record, label, tune and report (the user-facing procedure for the remaining Milestone 1 evidence)
+- `slotsight/eval/evaluate.py`: the accuracy harness (`--only` / `--exclude` frame-path patterns for the tune/test split) (R-01, R-02, R-05, R-07). Labels live in `slotsight/eval/labels.csv` (tracked). Frames go in `slotsight/data/eval_frames/`, and the detection cache and per-row results are `data/eval_cache.json` and `data/eval_predictions.csv`. All three are gitignored.
 - `slotsight/tests/`: the pytest suite (`conftest.py` has the `app`, `fake_detector`, `two_slots` and `client` fixtures; every test uses temporary config/data/models folders). `slotsight/requirements-dev.txt` adds pytest.
 - `slotsight/docs/`: `requirements.md`, `PLAN.md`, `evaluation.md`
 
@@ -51,6 +54,7 @@ API:
 - `POST /api/source` (`target`, `realtime`, `recorded_at`), `POST /api/source/stop`, `GET /api/source`
 - `POST /api/config`, `POST /api/review-threshold`
 - `GET /api/models` (catalogue, active id, running job), `POST /api/models/install` (`id`; 202, background download), `POST /api/models/select` (`id`; must be installed; saves `model` and loads in the background)
+- `GET /label` (labeling page), `GET /api/label/frames`, `GET /api/label/image?frame=`, `GET /api/label/frame?frame=`, `POST /api/label/frame` (`frame`, `condition`, `slots`)
 - `GET /api/history.csv`, `GET /api/history.xlsx`, `GET /api/trends?range=24h|7d` (read-only, cached by history size and modification time)
 - `GET /api/status` also carries `camera` (camera-check state) and, per slot, `raw_status`, `changed_at` and `changed_since_start`
 
@@ -81,11 +85,12 @@ The local `.venv` already has Flask, OpenCV, numpy, openpyxl, ultralytics, trans
 - Threading: run inference and model loading outside `state_lock` (status polls must never wait on them). `snapshot()` uses only the non-blocking `models.status()`. `models.require()` blocks while loading and is called only from `detect_vehicles` and scripts. Model calls are serialised by `inference_lock`. Lock order is source_lock → state_lock → ModelManager's internal lock (held briefly); never take state_lock while holding inference_lock or inside ModelManager.
 - Build DOM from server or config data with `textContent` or element creation, not raw `innerHTML` interpolation.
 - Write config files only with `write_atomic` and read them with `read_config`. Never write over a config file that couldn't be read; fall back to the last good copy. GET endpoints must not create or rewrite any file (exports read the history under `state_lock` and parse it outside).
+- Labels are never pre-filled from the model (the labeling page starts every slot unset), so they stay independent of what is evaluated. Threshold tuning uses only `tune/` sessions; reported verdicts use `--exclude "tune/*"`.
 - The evaluation harness scores single frames (`classify_frame` + review threshold), not smoothed output: labeled frames are independent images. Smoothing is a dashboard layer on top.
 - Validate slots with `slot_config_problem` (unique text ids, at least three points, at least `MIN_SLOT_AREA`). A zero-area slot must classify as unknown, never vacant.
 - Scripts that run frames through the pipeline (timing, evaluation) must redirect `HISTORY_PATH` and replace `camera` with a `CameraMonitor` on a temporary path. Otherwise their first frame becomes the lot's camera reference (this happened once on 2026-11-17).
 - In tests, scope temporary patches with `monkeypatch.context()`. `monkeypatch.undo()` also undoes the fixture's temporary paths and points the app at the user's real files.
-- Don't overwrite the user's `slots.json`, `settings.txt` or `occupancy_history.csv` during tests. Point `app.CONFIG_PATH`, `app.SETTINGS_PATH` and `app.HISTORY_PATH` at a temporary directory and use `app.app.test_client()`. Add `slotsight/` to `sys.path` to import `app`. To test first-run downloads, also set `app.MODELS_DIR` and `app.models = detectors.ModelManager(<temp dir>)`. The `app` fixture also gives each test its own `tracker` and a `camera` whose reference frame is in the temporary folder.
+- Don't overwrite the user's `slots.json`, `settings.txt` or `occupancy_history.csv` during tests. Point `app.CONFIG_PATH`, `app.SETTINGS_PATH` and `app.HISTORY_PATH` at a temporary directory and use `app.app.test_client()`. Add `slotsight/` to `sys.path` to import `app`. To test first-run downloads, also set `app.MODELS_DIR` and `app.models = detectors.ModelManager(<temp dir>)`. The `app` fixture also gives each test its own `tracker`, a `camera` whose reference frame is in the temporary folder, and temporary `LABELS_PATH` / `EVAL_FRAMES_DIR`, so tests never write the real `eval/labels.csv`.
 - The user may have `python slotsight/app.py` running with Flask's debug reloader. Multi-file edits can restart it mid-change and stop it, so tell the user if their server on port 5000 has stopped.
 - The target hardware is a student laptop, CPU-only. Keep the inference rate in mind (R-04: on-screen updates every ≤5 s, measured end to end).
 

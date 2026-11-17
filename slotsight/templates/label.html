@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SlotSight / Label frames</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='7') }}" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/"><span class="brand-mark">S</span><span>slotsight</span></a>
+      <div class="topbar-meta"><span>Evaluation set</span><span class="divider"></span><span id="labelFile">eval/labels.csv</span></div>
+      <a class="map-edit-button" href="/">Back to dashboard</a>
+    </header>
+
+    <main class="shell label-shell">
+      <section class="intro">
+        <div>
+          <p class="eyebrow">Evaluation / hand labels</p>
+          <h1>Label frames</h1>
+        </div>
+        <div class="label-progress" id="labelProgress" aria-live="polite"></div>
+      </section>
+
+      <p class="model-alert" id="labelEmpty" hidden>
+        No frames to label yet. Extract some from a recording first, e.g.
+        <code>python slotsight/eval/extract_frames.py lot.mp4 --condition daytime</code>,
+        then reload this page. See <code>slotsight/docs/recording-guide.md</code>.
+      </p>
+
+      <section class="label-workspace" id="labelWorkspace" hidden>
+        <div class="panel label-frame-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow" id="frameSession"></p>
+              <h2 id="frameName">-</h2>
+            </div>
+            <div class="label-nav">
+              <button class="map-edit-button" type="button" id="prevFrame" title="Previous frame (Left arrow)">&larr; Previous</button
+              ><button class="map-edit-button" type="button" id="nextFrame" title="Next frame (Right arrow)">Next &rarr;</button
+              ><button class="map-edit-button" type="button" id="nextUnlabeled">Next unlabeled</button>
+            </div>
+          </div>
+          <div class="label-stage" id="labelStage">
+            <img id="labelImage" alt="Frame to label" />
+            <svg id="labelOverlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg>
+            <div id="labelChips"></div>
+          </div>
+          <p class="label-help">
+            Click a slot to cycle <strong>unset &rarr; occupied &rarr; vacant</strong>. Shift-click marks it
+            <strong>partly hidden</strong> (a vehicle, pillar or tree covers part of it). Label what is really there,
+            not what the model might see. <kbd>Enter</kbd> saves and moves to the next unlabeled frame;
+            <kbd>&larr;</kbd> <kbd>&rarr;</kbd> move between frames.
+          </p>
+        </div>
+
+        <aside class="panel label-side">
+          <label class="config-field" for="labelCondition">
+            <span>Condition of this frame</span>
+            <select id="labelCondition"></select>
+          </label>
+          <div class="label-bulk" role="group" aria-label="Set every unset slot">
+            <button class="map-edit-button" type="button" id="restVacant">Unset &rarr; vacant</button
+            ><button class="map-edit-button" type="button" id="restOccupied">Unset &rarr; occupied</button
+            ><button class="map-clear-button" type="button" id="clearAll">Clear</button>
+          </div>
+          <div class="label-slots" id="labelSlots"></div>
+          <button class="button button-accent" type="button" id="saveNext">Save &amp; next <span>&rarr;</span></button>
+          <p class="form-message" id="labelMessage" aria-live="polite"></p>
+        </aside>
+      </section>
+    </main>
+    <script src="{{ url_for('static', filename='label.js', v='1') }}"></script>
+  </body>
+</html>

@@ -21,6 +21,7 @@ from detectors import DETECTION_CONFIDENCE_FLOOR, DetectorError, ModelManager  #
 from camera import CameraMonitor
 from sources import SourceWorker, parse_target
 from tracking import SlotTracker, unsmoothed
+import labeling
 import trends
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -31,6 +32,8 @@ CONFIG_PATH = CONFIG_DIR / "slots.json"
 SETTINGS_PATH = CONFIG_DIR / "settings.txt"
 HISTORY_PATH = DATA_DIR / "occupancy_history.csv"
 REFERENCE_PATH = CONFIG_DIR / "reference_frame.jpg"  # camera-shift reference (gitignored)
+LABELS_PATH = BASE_DIR / "eval" / "labels.csv"  # hand labels for the evaluation set (tracked)
+EVAL_FRAMES_DIR = DATA_DIR / "eval_frames"  # frames to label, from eval/extract_frames.py (gitignored)
 DEFAULT_LOT_NAME = "Lot 01"
 DEFAULT_REVIEW_THRESHOLD = 0.7
 DEFAULT_OVERLAP_THRESHOLD = 0.4
@@ -1014,6 +1017,65 @@ def get_trends():
         _trends_cache.clear()
         _trends_cache[key] = trends.summarize(history_rows(), range_key)
     return jsonify(_trends_cache[key])
+
+
+@app.get("/label")
+def label_page():
+    return render_template("label.html")
+
+
+def label_slot_ids() -> list[str]:
+    return [str(slot["id"]) for slot in load_slots()]
+
+
+@app.get("/api/label/frames")
+def label_frames():
+    """Frames to label, with how many of the current slots each has labels for. Read-only."""
+    slots = load_slots()
+    return jsonify(
+        {
+            "frames": labeling.list_frames(EVAL_FRAMES_DIR, LABELS_PATH, [str(slot["id"]) for slot in slots]),
+            "slots": [{"id": slot["id"], "points": slot["points"]} for slot in slots],
+            "conditions": list(labeling.CONDITIONS),
+        }
+    )
+
+
+@app.get("/api/label/image")
+def label_image():
+    try:
+        path = labeling.resolve_frame(EVAL_FRAMES_DIR, request.args.get("frame", ""))
+    except labeling.LabelingError as error:
+        return jsonify({"error": str(error)}), 404
+    return send_file(path, max_age=3600)
+
+
+@app.get("/api/label/frame")
+def label_frame():
+    frame = request.args.get("frame", "")
+    try:
+        labeling.resolve_frame(EVAL_FRAMES_DIR, frame)
+    except labeling.LabelingError as error:
+        return jsonify({"error": str(error)}), 404
+    return jsonify({"frame": frame, "labels": labeling.labels_for(LABELS_PATH, frame), "session": labeling.session_info(EVAL_FRAMES_DIR, frame)})
+
+
+@app.post("/api/label/frame")
+def save_label_frame():
+    """Replace one frame's labels in eval/labels.csv (slots left unset are not saved)."""
+    payload = request.get_json(silent=True) or {}
+    frame = str(payload.get("frame", ""))
+    slots = payload.get("slots")
+    if not isinstance(slots, list):
+        return jsonify({"error": "Provide a slots list."}), 400
+    try:
+        labeling.resolve_frame(EVAL_FRAMES_DIR, frame)
+        saved = labeling.save_frame(LABELS_PATH, frame, str(payload.get("condition", "")), slots, label_slot_ids())
+    except labeling.LabelingError as error:
+        return jsonify({"error": str(error)}), 400
+    total = len(label_slot_ids())
+    note = "" if saved == total else f" {total - saved} slot(s) left unset; R-02 only counts frames with every slot labeled."
+    return jsonify({"saved": saved, "message": f"Saved {saved} label(s) for {frame}.{note}"})
 
 
 @app.get("/api/history.csv")
