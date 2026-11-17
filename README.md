@@ -126,7 +126,7 @@ python slotsight/eval/evaluate.py --only "tune/*" --overlap-threshold 0.5       
 python slotsight/eval/evaluate.py --exclude "tune/*" --note "test sessions" --write # report
 ```
 
-While your own lot's footage is pending, `python slotsight/eval/pklot.py prepare|evaluate` runs the same evaluation on a subset of the public PKLot dataset (CC BY 4.0) as proxy evidence (see its docstring; keep the download outside OneDrive). Those numbers come from other lots and camera views, so they don't show that this lot meets R-01, R-02 or R-05.
+While your own lot's footage was pending, the same classification code was run once on a subset of the public PKLot dataset (CC BY 4.0) as proxy evidence; the results are in [`slotsight/docs/evaluation.md`](slotsight/docs/evaluation.md). Those numbers come from other lots and camera views, so they don't show that this lot meets R-01, R-02 or R-05.
 
 The evaluation scores the classifier against hand-labeled frames for R-01 (per-slot accuracy), R-02 (free-count match), R-05 (evening and rain against daytime) and R-07 (occluded slots must be correct or unknown, never a wrong reading). Frames go in `slotsight/data/eval_frames/<set>/<session>/` (not tracked). The **Label frames** page (`/label`, linked under Export history) shows each frame with the slot layout: click a slot to set it occupied or vacant, shift-click to mark it partly hidden, and press Enter to save and move on. Labels are saved to `slotsight/eval/labels.csv`, one row per slot per frame:
 

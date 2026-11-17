@@ -44,7 +44,6 @@ Only `README.md`, `.gitignore` and this `.claude/` folder sit at the top level. 
 - `slotsight/labeling.py`: reading and saving `eval/labels.csv` for the `/label` page (atomic rewrite, one frame's rows replaced per save; frame paths confined to `data/eval_frames/`)
 - `slotsight/eval/extract_frames.py`: frames every N seconds from a recording into `data/eval_frames/<test|tune>/<session>/` with a `session.json`; refuses to split a session between tune and test
 - `slotsight/docs/recording-guide.md`: how to record, label, tune and report (the user-facing procedure for the remaining Milestone 1 evidence)
-- `slotsight/eval/pklot.py`: proxy evaluation on a pinned PKLot subset (public data, kept outside OneDrive). Its results are proxy evidence only: never mark R-01, R-02 or R-05 met from them.
 - `slotsight/eval/evaluate.py`: the accuracy harness (`--only` / `--exclude` frame-path patterns for the tune/test split) (R-01, R-02, R-05, R-07). Labels live in `slotsight/eval/labels.csv` (tracked). Frames go in `slotsight/data/eval_frames/`, and the detection cache and per-row results are `data/eval_cache.json` and `data/eval_predictions.csv`. All three are gitignored.
 - `slotsight/tests/`: the pytest suite (`conftest.py` has the `app`, `fake_detector`, `two_slots` and `client` fixtures; every test uses temporary config/data/models folders). `slotsight/requirements-dev.txt` adds pytest.
 - `slotsight/docs/`: `requirements.md`, `PLAN.md`, `evaluation.md`
@@ -87,6 +86,7 @@ The local `.venv` already has Flask, OpenCV, numpy, openpyxl, ultralytics, trans
 - Build DOM from server or config data with `textContent` or element creation, not raw `innerHTML` interpolation.
 - Write config files only with `write_atomic` and read them with `read_config`. Never write over a config file that couldn't be read; fall back to the last good copy. GET endpoints must not create or rewrite any file (exports read the history under `state_lock` and parse it outside).
 - Labels are never pre-filled from the model (the labeling page starts every slot unset), so they stay independent of what is evaluated. Threshold tuning uses only `tune/` sessions; reported verdicts use `--exclude "tune/*"`.
+- The PKLot results in `docs/evaluation.md` (a one-off run on public data) are proxy evidence only: never mark R-01, R-02 or R-05 met from them.
 - The evaluation harness scores single frames (`classify_frame` + review threshold), not smoothed output: labeled frames are independent images. Smoothing is a dashboard layer on top.
 - Validate slots with `slot_config_problem` (unique text ids, at least three points, at least `MIN_SLOT_AREA`). A zero-area slot must classify as unknown, never vacant.
 - Scripts that run frames through the pipeline (timing, evaluation) must redirect `HISTORY_PATH` and replace `camera` with a `CameraMonitor` on a temporary path. Otherwise their first frame becomes the lot's camera reference (this happened once on 2026-11-17).
