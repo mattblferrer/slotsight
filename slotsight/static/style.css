@@ -1050,7 +1050,8 @@ dialog::backdrop {
   text-transform: uppercase;
   letter-spacing: 1px;
 }
-.config-field input {
+.config-field input,
+.config-field select {
   width: 100%;
   border: 1px solid var(--line);
   padding: 12px 14px;

@@ -45,7 +45,15 @@ class DetectorError(RuntimeError):
     """A model could not be installed, loaded or run."""
 
 
+INFERENCE_SIZES = (640, 960, 1280)  # longest side the frame is resized to before detection
+DEFAULT_INFERENCE_SIZE = 640
+
+
 class Detector(Protocol):
+    # True when detect() accepts `inference_size` (Ultralytics models). The others use
+    # their model's fixed input size (RF-DETR, RT-DETRv2, YOLOX).
+    supports_inference_size: bool
+
     def detect(self, frame: np.ndarray) -> list[Box]:
         """Vehicle boxes in a BGR frame, with confidence >= DETECTION_CONFIDENCE_FLOOR."""
 
@@ -274,6 +282,8 @@ def _vehicle_boxes(xyxy, scores, names) -> list[Box]:
 
 
 class UltralyticsDetector:
+    supports_inference_size = True
+
     def __init__(self, weights: Path) -> None:
         from ultralytics import YOLO
 
@@ -283,13 +293,16 @@ class UltralyticsDetector:
         if not self.classes:
             raise DetectorError(f"{weights.name} has none of the vehicle classes {sorted(VEHICLE_NAMES)}.")
 
-    def detect(self, frame: np.ndarray) -> list[Box]:
-        result = self.model(frame, verbose=False, conf=DETECTION_CONFIDENCE_FLOOR, classes=self.classes)[0]
+    def detect(self, frame: np.ndarray, inference_size: int = DEFAULT_INFERENCE_SIZE) -> list[Box]:
+        # A larger inference size finds small or distant cars better, at a CPU cost.
+        result = self.model(frame, verbose=False, conf=DETECTION_CONFIDENCE_FLOOR, classes=self.classes, imgsz=inference_size)[0]
         names = [self.model.names[int(index)] for index in result.boxes.cls.tolist()]
         return _vehicle_boxes(result.boxes.xyxy.tolist(), result.boxes.conf.tolist(), names)
 
 
 class TransformersDetector:
+    supports_inference_size = False
+
     def __init__(self, folder: Path) -> None:
         import torch
         from transformers import AutoImageProcessor, AutoModelForObjectDetection
@@ -312,6 +325,8 @@ class TransformersDetector:
 
 
 class RFDETRDetector:
+    supports_inference_size = False
+
     def __init__(self, weights: Path, size: str) -> None:
         import rfdetr
         from rfdetr.assets.coco_classes import COCO_CLASSES
@@ -336,6 +351,7 @@ class YoloxDetector:
 
     INPUT = 640
     STRIDES = (8, 16, 32)
+    supports_inference_size = False
     NMS_THRESHOLD = 0.5
     COCO80 = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}  # 0-based COCO-80 ids
 
@@ -497,6 +513,7 @@ class ModelManager:
             provider = PROVIDERS[spec.provider]
             rows.append(
                 {
+                    "supports_inference_size": spec.provider == "ultralytics",
                     "id": spec.id,
                     "name": spec.name,
                     "provider": provider.name,

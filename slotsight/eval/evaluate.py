@@ -91,9 +91,10 @@ class Outcome:
     """One labeled slot in one frame, with what the dashboard would show."""
 
     label: Label
-    shown: str  # after the review threshold: occupied, vacant or unknown
+    shown: str  # after the review threshold and the empty-look check: occupied, vacant or unknown
     raw: str  # before the review threshold: occupied or vacant
     confidence: float
+    flagged: bool = False  # the "doesn't look empty" check turned a vacant reading into unknown
 
     @property
     def correct(self) -> bool:
@@ -186,11 +187,12 @@ def load_cache(path: Path) -> dict[str, Any]:
         return {}
 
 
-def cache_key(model_id: str, image_path: Path) -> str:
+def cache_key(model_id: str, image_path: Path, size: int | None = None) -> str:
     stat = image_path.stat()
     return "|".join(
         [
             model_id,
+            f"size={size or slotsight.load_settings()['inference_size']}",
             f"conf>={slotsight.DETECTION_CONFIDENCE_FLOOR}",
             str(image_path.resolve()),
             str(stat.st_mtime_ns),
@@ -209,8 +211,16 @@ def run_pipeline(
     overlap_threshold: float,
     review_threshold: float,
     cache_path: Path | None,
+    empty_check_threshold: float = 0.0,
 ) -> list[Outcome]:
-    """Classify every labeled frame with the dashboard's own code and pair it with its labels."""
+    """Classify every labeled frame with the dashboard's own code and pair it with its labels.
+
+    Frames run in name order, which is time order within a session folder (see
+    extract_frames.py). With `empty_check_threshold` > 0 the "doesn't look empty"
+    check runs as it does live, learning each session's empty slots as it goes
+    (and starting afresh in each session folder).
+    """
+    import appearance
     import cv2
 
     by_frame: dict[str, list[Label]] = defaultdict(list)
@@ -225,12 +235,18 @@ def run_pipeline(
     cache = load_cache(cache_path) if cache_path else {}
     cache_changed = False
     outcomes: list[Outcome] = []
+    reference = appearance.EmptyReference()
+    session = None
     for index, (frame_name, frame_labels) in enumerate(sorted(by_frame.items()), start=1):
+        folder = frame_name.rpartition("/")[0]  # "" for frames directly in frames_dir
+        if folder != session:
+            session = folder
+            reference.reset()
         image_path = frame_path(frames_dir, frame_name)
         image = cv2.imread(str(image_path))
         if image is None:
             raise LabelError(f"Could not read {image_path} as an image.")
-        key = cache_key(model_id, image_path)
+        key = cache_key(model_id, image_path)  # includes the inference size
         if key in cache:
             detections = [tuple(box) for box in cache[key]]
         else:
@@ -240,10 +256,11 @@ def run_pipeline(
         raw_results = slotsight.classify_frame(image, slots, detections, overlap_threshold)
         raw_status = {result["id"]: result["status"] for result in raw_results}
         shown = slotsight.apply_review_threshold([dict(result) for result in raw_results], review_threshold)
+        shown = reference.check(image, slots, shown, empty_check_threshold)
         shown_by_id = {result["id"]: result for result in shown}
         for label in frame_labels:
             result = shown_by_id[label.slot_id]
-            outcomes.append(Outcome(label, result["status"], raw_status[label.slot_id], result["confidence"]))
+            outcomes.append(Outcome(label, result["status"], raw_status[label.slot_id], result["confidence"], bool(result.get("reason"))))
         if index % 25 == 0:
             print(f"  {index}/{len(by_frame)} frames", file=sys.stderr)
     if cache_path and cache_changed:
@@ -351,7 +368,20 @@ def score(outcomes: list[Outcome], slot_ids: list[str]) -> dict[str, Any]:
         "raw_false_free": sum(outcome.raw == "vacant" and outcome.label.true_status == "occupied" for outcome in held),
     }
 
+    # The "doesn't look empty" check: what it changed, and the scores without it.
+    flagged = [outcome for outcome in outcomes if outcome.flagged]
+    without = [Outcome(o.label, "vacant" if o.flagged else o.shown, o.raw, o.confidence) for o in outcomes]
+    without_block = accuracy_block(without)
+    empty_check = {
+        "flagged": len(flagged),
+        "caught": sum(outcome.label.true_status == "occupied" for outcome in flagged),
+        "cost": sum(outcome.label.true_status == "vacant" for outcome in flagged),
+        "accuracy_without": without_block["accuracy"],
+        "false_free_without": without_block["false_free"],
+    }
+
     return {
+        "empty_check": empty_check,
         "overall": overall,
         "r01": verdict(None if overall["accuracy"] is None else overall["accuracy"] >= ACCURACY_TARGET),
         "confusion": confusion,
@@ -390,7 +420,7 @@ def render_report(results: dict[str, Any], context: dict[str, Any]) -> str:
         "",
         f"- Labels: {context['labels']}{note}",
         f"- {results['frames']} frames, {overall['n']} labeled slot readings, {len(context['slot_ids'])} configured slots",
-        f"- Model: {context['model']}; overlap threshold {context['overlap']:g}; review threshold {context['review']:g}",
+        f"- Model: {context['model']}; inference size {context.get('size', '--')}; overlap threshold {context['overlap']:g}; review threshold {context['review']:g}",
         "- Scoring: unknown counts as wrong for R-01, R-02 and R-05; R-07 allows correct or unknown on occluded slots",
         "",
         "| Requirement | Measure | Result | Target | Verdict |",
@@ -410,6 +440,9 @@ def render_report(results: dict[str, Any], context: dict[str, Any]) -> str:
         f"over-reported in {free['over_reported']} frames; {free['skipped_frames']} frames skipped (not every slot labeled)",
         f"- Occluded slots: {occluded['correct']} correct, {occluded['unknown']} unknown, {occluded['wrong']} wrong "
         f"({occluded['false_free']} shown free while occupied)",
+        f"- \"Doesn't look empty\" check (threshold {context.get('empty_check', 0):g}): changed {results['empty_check']['flagged']} vacant readings to unknown, "
+        f"{results['empty_check']['caught']} of them occupied (missed cars caught) and {results['empty_check']['cost']} truly vacant. "
+        f"Without it: accuracy {pct(results['empty_check']['accuracy_without'])}, occupied shown as free {results['empty_check']['false_free_without']}",
         f"- Shown as unknown by the review threshold: {held['n']}; of those, the raw guess would have been wrong {held['raw_wrong']} times "
         f"({held['raw_false_free']} false free)",
         "",
@@ -432,12 +465,12 @@ def write_predictions(path: Path, outcomes: list[Outcome]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
-        writer.writerow(["frame", "slot_id", "condition", "occluded", "true_status", "shown_status", "raw_status", "confidence", "correct"])
+        writer.writerow(["frame", "slot_id", "condition", "occluded", "true_status", "shown_status", "raw_status", "confidence", "correct", "empty_check_flagged"])
         for outcome in outcomes:
             label = outcome.label
             writer.writerow(
                 [label.frame, label.slot_id, label.condition, int(label.occluded), label.true_status,
-                 outcome.shown, outcome.raw, outcome.confidence, int(outcome.correct)]
+                 outcome.shown, outcome.raw, outcome.confidence, int(outcome.correct), int(outcome.flagged)]
             )
 
 
@@ -465,6 +498,8 @@ def main() -> int:
     parser.add_argument("--slots", type=Path, default=slotsight.CONFIG_PATH, help="slot polygons (default config/slots.json)")
     parser.add_argument("--overlap-threshold", type=float, help="override overlap_threshold from settings.txt")
     parser.add_argument("--review-threshold", type=float, help="override review_threshold from settings.txt")
+    parser.add_argument("--inference-size", type=int, choices=(640, 960, 1280), help="override inference_size from settings.txt (Ultralytics models)")
+    parser.add_argument("--empty-check-threshold", type=float, help="override empty_check_threshold from settings.txt (0 = off)")
     parser.add_argument("--predictions", type=Path, default=DEFAULT_PREDICTIONS, help="per-row results CSV")
     parser.add_argument("--only", action="append", default=[], metavar="PATTERN", help="score only frames matching this pattern, e.g. 'tune/*' (repeatable)")
     parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN", help="leave out frames matching this pattern, e.g. 'tune/*' (repeatable)")
@@ -474,15 +509,20 @@ def main() -> int:
     args = parser.parse_args()
 
     slotsight.CONFIG_PATH = args.slots
+    if args.inference_size:
+        # Applies to this run only: detect_vehicles reads it through load_settings().
+        real_load_settings = slotsight.load_settings
+        slotsight.load_settings = lambda: {**real_load_settings(), "inference_size": args.inference_size}
     slots = slotsight.load_slots()
     slot_ids = [str(slot["id"]) for slot in slots]
     settings = slotsight.load_settings()
     overlap = settings["overlap_threshold"] if args.overlap_threshold is None else args.overlap_threshold
     review = settings["review_threshold"] if args.review_threshold is None else args.review_threshold
+    empty_check = settings["empty_check_threshold"] if args.empty_check_threshold is None else args.empty_check_threshold
     try:
         labels = select_frames(read_labels(args.labels, slot_ids), args.only, args.exclude)
         # A cache miss with no model loaded raises DetectionError below.
-        outcomes = run_pipeline(labels, slots, args.frames_dir, overlap, review, None if args.no_cache else DEFAULT_CACHE)
+        outcomes = run_pipeline(labels, slots, args.frames_dir, overlap, review, None if args.no_cache else DEFAULT_CACHE, empty_check)
     except LabelError as error:
         print(error, file=sys.stderr)
         return 1
@@ -498,6 +538,8 @@ def main() -> int:
             "note": args.note,
             "slot_ids": slot_ids,
             "model": slotsight.model_status()["name"],
+            "size": slotsight.load_settings()["inference_size"],
+            "empty_check": empty_check,
             "overlap": overlap,
             "review": review,
         },

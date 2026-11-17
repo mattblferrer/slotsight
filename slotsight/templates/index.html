@@ -12,7 +12,7 @@
     />
     <link
       rel="stylesheet"
-      href="{{ url_for('static', filename='style.css', v='7') }}"
+      href="{{ url_for('static', filename='style.css', v='8') }}"
     />
   </head>
   <body>
@@ -307,6 +307,14 @@
             value="70"
           />
         </label>
+        <label class="config-field" for="inferenceSizeInput">
+          <span>Detection resolution <small id="inferenceSizeNote"></small></span>
+          <select id="inferenceSizeInput">
+            <option value="640">640 px: default, fastest</option>
+            <option value="960">960 px</option>
+            <option value="1280">1280 px: small or distant cars, about 3-4x slower</option>
+          </select>
+        </label>
         <section class="model-picker" aria-labelledby="modelPickerTitle">
           <div class="model-picker-head">
             <span id="modelPickerTitle">Detection model</span>
@@ -324,6 +332,6 @@
         </div>
       </form>
     </dialog>
-    <script src="{{ url_for('static', filename='app.js', v='6') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='7') }}"></script>
   </body>
 </html>

@@ -107,7 +107,7 @@ def main() -> int:
 
 - Source: {name} ({kind}{', played at recorded speed' if kind == 'file' else ''}){f' - {args.note}' if args.note else ''}
 - Machine: {platform.processor() or platform.machine()} / {device_name()} / Python {platform.python_version()}
-- Model: {model['name']} ({model['id']}); frame size {size}; {len(slotsight.load_slots())} slots
+- Model: {model['name']} ({model['id']}); inference size {settings['inference_size']}; frame size {size}; {len(slotsight.load_slots())} slots
 - Sample interval {settings['sample_interval_s']:g} s; dashboard poll {DASHBOARD_POLL_S:g} s; {status['frames_processed']} readings over {args.seconds:g} s
 
 | Measure | Mean | p95 | Max |

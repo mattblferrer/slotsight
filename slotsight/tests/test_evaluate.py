@@ -139,7 +139,7 @@ def test_end_to_end_run_scores_writes_predictions_and_caches(app, fake_detector,
         ],
     )
     boxes = {128: [(20, 20, 300, 460, 0.9)], 90: []}
-    fake_detector.detect = lambda frame: boxes[int(frame[0, 0, 0])]
+    fake_detector.detect = lambda frame, **kwargs: boxes[int(frame[0, 0, 0])]
     cache, predictions = tmp_path / "cache.json", tmp_path / "pred.csv"
     monkeypatch.setattr(evaluate, "DEFAULT_CACHE", cache)
     args = ["evaluate.py", "--labels", str(labels), "--frames-dir", str(frames), "--predictions", str(predictions)]
@@ -151,7 +151,7 @@ def test_end_to_end_run_scores_writes_predictions_and_caches(app, fake_detector,
     assert len(json.loads(cache.read_text(encoding="utf-8"))) == 2
 
     # A second run with another threshold reuses cached detections: no inference at all.
-    fake_detector.detect = lambda frame: pytest.fail("detector called despite the cache")
+    fake_detector.detect = lambda frame, **kwargs: pytest.fail("detector called despite the cache")
     monkeypatch.setattr(sys, "argv", args + ["--review-threshold", "0.95"])
     assert evaluate.main() == 2  # R-01 now fails: the 0.9 detection shows as unknown
 

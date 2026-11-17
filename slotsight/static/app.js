@@ -46,6 +46,7 @@ function slotLabel(item, readingTime = state.readingTime) {
   const duration = statusDuration(item, readingTime);
   if (duration) parts.push(`for ${duration}`);
   if (item.raw_status && item.raw_status !== item.status) parts.push(`latest frame: ${item.raw_status}, confirming`);
+  if (item.reason) parts.push(item.reason);
   parts.push(`${Math.round((item.confidence ?? 0) * 100)}% confidence`);
   if (item.updated_at) parts.push(timeOnly(item.updated_at));
   return parts.join(" / ");
@@ -623,6 +624,9 @@ function renderModels(data) {
   $("modelPickerNote").textContent = data.overridden
     ? "Set by SLOTSIGHT_MODEL"
     : "COCO-trained; only car, motorcycle, bus and truck are used";
+  const active = data.models.find((model) => model.active);
+  $("inferenceSizeNote").textContent =
+    active && !active.supports_inference_size ? `(not used by ${active.name}: it has a fixed input size)` : "";
   const rows = data.models.map((model) => {
     const row = document.createElement("div");
     row.className = "model-row";
@@ -720,6 +724,7 @@ $("openConfig").addEventListener("click", async () => {
     (data.review_threshold ?? state.reviewThreshold) * 100,
   );
   $("reviewThresholdValue").textContent = `${$("reviewThresholdInput").value}%`;
+  $("inferenceSizeInput").value = String(data.inference_size ?? 640);
   $("configInput").value = JSON.stringify(slots, null, 2);
   $("modelMessage").textContent = "";
   $("configDialog").showModal();
@@ -739,6 +744,7 @@ $("saveConfig").addEventListener("click", async (event) => {
         slots,
         lot_name: lotName,
         review_threshold: reviewThreshold,
+        inference_size: Number($("inferenceSizeInput").value),
       }),
     });
     const data = await response.json();

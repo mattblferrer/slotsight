@@ -23,6 +23,7 @@ import app as slotsight_app  # noqa: E402
 import detectors  # noqa: E402
 from camera import CameraMonitor  # noqa: E402
 from tracking import SlotTracker  # noqa: E402
+from appearance import EmptyReference  # noqa: E402
 
 # Two side-by-side slots covering the whole frame: easy to reason about in pixels.
 TWO_SLOTS = [
@@ -40,8 +41,11 @@ class FakeDetector:
         self.error: Exception | None = None
         self.calls = 0
 
-    def detect(self, frame):
+    supports_inference_size = True
+
+    def detect(self, frame, inference_size=640):
         self.calls += 1
+        self.last_inference_size = inference_size
         if self.error is not None:
             raise self.error
         return list(self.boxes)
@@ -59,6 +63,7 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(slotsight_app, "REFERENCE_PATH", tmp_path / "config" / "reference_frame.jpg")
     monkeypatch.setattr(slotsight_app, "camera", CameraMonitor(tmp_path / "config" / "reference_frame.jpg"))
     monkeypatch.setattr(slotsight_app, "tracker", SlotTracker())
+    monkeypatch.setattr(slotsight_app, "empty_reference", EmptyReference())
     monkeypatch.setattr(slotsight_app, "LABELS_PATH", tmp_path / "eval" / "labels.csv")
     monkeypatch.setattr(slotsight_app, "EVAL_FRAMES_DIR", tmp_path / "data" / "eval_frames")
     for name in (

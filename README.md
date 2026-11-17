@@ -40,6 +40,7 @@ slotsight/
   app.py                   Flask backend: classification, history, API
   detectors.py             detection models from several providers: registry, install, load
   tracking.py              smoothing over frames and how long each status has lasted
+  appearance.py            "doesn't look empty" safeguard for cars the detector misses
   camera.py                camera-shift check against a reference frame
   trends.py                free slots over time and busy hours, from the history
   sources.py               video file, stream and camera reader
@@ -75,6 +76,8 @@ Only one source runs at a time. Starting a new one stops the previous one.
 - **Preview:** the processed frame shows every vehicle detection in blue with its confidence. A solid box marks a slot as occupied. A dashed box is weak or only partly in a slot; those are the detections that turn slots "unknown".
 - **Smoothing (videos and live sources):** a slot shows "occupied" after 2 agreeing frames, "vacant" only after 3, and "unknown" at once. A car driving past doesn't flicker a free slot, and a slot never reads free on a single frame. A slot whose readings keep flipping shows unknown. While a change is being confirmed, the tooltip shows the latest frame's result. Single uploaded images are shown as read.
 - **How long:** the activity list and tooltips show how long each slot has had its status ("occupied · 14m"). "≥" means the status was already there when monitoring started, so it may be longer. For recorded footage, durations are measured in footage time.
+- **"Doesn't look empty" check (videos and live sources):** each slot learns what it looks like when empty. If a slot reads vacant but looks too different from that (a car the detector missed, say), it shows unknown with the reason in the tooltip. It never marks a slot occupied. `empty_check_threshold` in `settings.txt` sets how different is too different (default 0.8; 0 turns it off).
+- **Detection resolution:** in **Configure slots**, 640 px is the fastest. 960 or 1280 px finds small or distant cars better at a CPU cost (Ultralytics models only; the others have a fixed input size). Re-run the timing test after changing it.
 - **Camera check:** the frame the layout was saved on is kept as a reference (`config/reference_frame.jpg`); without one, the first processed frame of a video or live source is used. About every 10th frame of a video or live source is compared with it. If the slots look more than 2% of the frame width out of place in 3 checks in a row, a warning asks you to check the layout. Saving a changed layout sets a new reference. When a frame has too few features to compare (night, fog), the map footer says it can't verify, rather than raising an alarm. Nothing is moved automatically.
 - **Trends:** free slots over the last 24 hours or 7 days of readings, and the average share of slots occupied for each hour of the day, with the three busiest hours marked. They are drawn from the history and refresh every minute. Hover or use the arrow keys for values, or open the table.
 
@@ -89,7 +92,7 @@ All paths are under `slotsight/`:
 Your configuration stays on your machine: git ignores both config files, and the app recreates them from its defaults if they're missing.
 
 - `config/slots.json`: slot polygons, edited with **Configure slots** or **Edit layout**. Coordinates are normalised from 0 to 100, so a configuration works at any image size.
-- `config/settings.txt`: lot name, `review_threshold`, `overlap_threshold`, `sample_interval_s` (default 2 s) and `model` (default `ultralytics/yolo11s`).
+- `config/settings.txt`: lot name, `review_threshold`, `overlap_threshold`, `sample_interval_s` (default 2 s), `inference_size` (640, 960 or 1280; default 640), `empty_check_threshold` (default 0.8; 0 = off) and `model` (default `ultralytics/yolo11s`).
 - `data/occupancy_history.csv`: one row per slot for every processed frame (viewing the dashboard doesn't add rows). Columns: `timestamp, slot_id, status, confidence, source, frame_time_s, raw_status`. `status` is what the dashboard showed (smoothed for videos and live sources), `raw_status` is the single-frame result and `confidence` belongs to it, and `frame_time_s` is the frame's position in a video file. Older files gain the new column automatically. The dashboard offers CSV and Excel downloads. Older history files are kept beside it as `occupancy_history-<date>.csv`.
 - `models/`: downloaded detection models.
 

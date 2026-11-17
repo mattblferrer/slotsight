@@ -66,6 +66,18 @@ Threshold check (pooled per-slot accuracy / occupied shown as free; untuned defa
   RF-DETR shows 7-8x fewer occupied slots as free (it finds more cars but with low confidence, so they become unknown), which is safer for R-07, but it isn't more accurate.
 - **What this means.** A general-purpose vehicle detector plus polygon overlap, as it stands, is far from 90 % on views like PKLot's. Published 95 %+ PKLot results use classifiers trained on per-slot image crops. Whether the target lot behaves like this depends on its view: a closer, lower camera with fewer, larger slots is the favourable case. The first labeled session from the target lot should be evaluated before anything else is tuned.
 
+#### "Doesn't look empty" safeguard on the PKLot frames (one-off measurement, 2026-11-17)
+
+The safeguard (`appearance.py`) turns a vacant reading into unknown when the slot looks too different from its learned empty appearance. It was run on the same 603 PKLot frames, in time order per view, with the default model and thresholds:
+
+| Check threshold | Occupied shown as free | Missed cars caught | Truly empty slots turned unknown | Per-slot accuracy |
+| --- | --- | --- | --- | --- |
+| off | 9,167 | 0 | 0 of 15,646 | 52.7 % |
+| **0.8 (default)** | **3,604 (-61 %)** | **5,563** | **628 (4.0 %)** | 50.8 % |
+| 0.6 | 1,634 (-82 %) | 7,533 | 2,053 (13.1 %) | 46.5 % |
+
+It improves safety (R-07), not accuracy: caught cars become unknown, which still counts as wrong for R-01. By view at 0.8, occupied shown as free drops from 7,860 to 2,666 (PUCPR), 192 to 104 (UFPR04), and 1,115 to 834 (UFPR05), at a cost of 449, 51 and 128 truly empty slots shown unknown. PKLot frames are hours apart; live sampling every 2 s gives the learned references far fresher lighting. Proxy evidence only.
+
 ## R-04: Update interval
 
 ### R-04 timing run: 2026-11-17 04:03

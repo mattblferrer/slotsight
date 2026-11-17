@@ -21,6 +21,7 @@ from detectors import DETECTION_CONFIDENCE_FLOOR, DetectorError, ModelManager  #
 from camera import CameraMonitor
 from sources import SourceWorker, parse_target
 from tracking import SlotTracker, unsmoothed
+import appearance
 import labeling
 import trends
 
@@ -89,6 +90,8 @@ models = ModelManager(MODELS_DIR)
 tracker = SlotTracker()
 # Warns when the camera seems to have moved away from the reference frame.
 camera = CameraMonitor(REFERENCE_PATH)
+# Learns each slot's empty look; a vacant reading that doesn't look empty becomes unknown.
+empty_reference = appearance.EmptyReference()
 latest_frame_snapshot: dict[str, Any] | None = None
 latest_frame = None
 latest_frame_detections = None
@@ -226,10 +229,30 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
         "review_threshold": unit_interval(settings.get("review_threshold"), DEFAULT_REVIEW_THRESHOLD),
         "overlap_threshold": unit_interval(settings.get("overlap_threshold"), DEFAULT_OVERLAP_THRESHOLD),
         "sample_interval_s": sample_interval(settings.get("sample_interval_s")),
+        # Longest side frames are resized to before detection (Ultralytics models only).
+        "inference_size": inference_size(settings.get("inference_size")),
+        # "Doesn't look empty" safeguard (appearance.py): 0 turns it off.
+        "empty_check_threshold": empty_check_threshold(settings.get("empty_check_threshold")),
         # A model id such as "ultralytics/yolo11s". Older files had `model_path`
         # (e.g. "yolo11s.pt"), which is converted here and dropped.
         "model": detectors.normalize_model_id(str(settings.get("model") or settings.get("model_path") or DEFAULT_MODEL)),
     }
+
+
+def empty_check_threshold(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return appearance.DEFAULT_THRESHOLD
+    return max(0.0, min(3.0, number))
+
+
+def inference_size(value: Any) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return detectors.DEFAULT_INFERENCE_SIZE
+    return number if number in detectors.INFERENCE_SIZES else detectors.DEFAULT_INFERENCE_SIZE
 
 
 def load_settings() -> dict[str, Any]:
@@ -342,6 +365,8 @@ def detect_vehicles(frame) -> list[tuple[float, float, float, float, float]]:
         raise DetectionError(f"Could not load the detection model: {error}", status_code=503) from error
     try:
         with inference_lock:
+            if getattr(detector, "supports_inference_size", False):
+                return detector.detect(frame, inference_size=load_settings()["inference_size"])
             return detector.detect(frame)
     except Exception as error:
         raise DetectionError(f"Vehicle detection failed: {error}") from error
@@ -593,6 +618,8 @@ def snapshot(
     apply_review_threshold(results, review_threshold)
     if frame is not None:
         if smooth:
+            # Frames of a video or live source: catch missed cars, then smooth.
+            results = empty_reference.check(frame, slots, results, settings["empty_check_threshold"])
             results = tracker.update(results, captured_at or processed_at or datetime.now(timezone.utc))
         else:
             results = unsmoothed(results)
@@ -618,6 +645,7 @@ def snapshot(
         "lot_name": settings["lot_name"],
         "review_threshold": review_threshold,
         "overlap_threshold": settings["overlap_threshold"],
+        "inference_size": settings["inference_size"],
     }
     if frame is not None:
         response["preview_image"] = annotate_frame(
@@ -715,6 +743,7 @@ def start_source(
         if active_source is not None:
             active_source.stop()
         tracker.reset()  # a new source starts a new sequence
+        empty_reference.reset()  # and may show another view: learn the empty slots afresh
         handler = frame_handler(name, recorded_at)
         worker = SourceWorker(
             kind,
@@ -815,10 +844,17 @@ def config():
     problem = slot_config_problem(slots)
     if problem:
         return jsonify({"error": problem}), 400
+    size = payload.get("inference_size", settings["inference_size"])
+    try:
+        size = int(size)
+    except (TypeError, ValueError):
+        size = None
+    if size not in detectors.INFERENCE_SIZES:
+        return jsonify({"error": f"Detection resolution must be one of {', '.join(map(str, detectors.INFERENCE_SIZES))}."}), 400
     with state_lock:
         layout_changed = slots != load_slots()
         save_slots(slots)
-        save_settings(lot_name=lot_name.strip(), review_threshold=review_threshold)
+        save_settings(lot_name=lot_name.strip(), review_threshold=review_threshold, inference_size=size)
         reclassify_latest_frame()
         frame = latest_frame
     message = "Lot configuration saved."
@@ -827,7 +863,7 @@ def config():
         # Only when the slots changed, so renaming the lot can't hide a "moved" warning.
         camera.set_reference(frame)
         message += " The current frame is now the camera reference."
-    return jsonify({"slots": slots, "lot_name": lot_name.strip(), "review_threshold": review_threshold, "message": message})
+    return jsonify({"slots": slots, "lot_name": lot_name.strip(), "review_threshold": review_threshold, "inference_size": size, "message": message})
 
 
 @app.post("/api/review-threshold")
