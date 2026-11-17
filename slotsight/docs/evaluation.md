@@ -2,6 +2,12 @@
 
 Measured evidence for the requirements in `requirements.md`.
 
+## R-01, R-02, R-05, R-07: Accuracy
+
+Runs of `slotsight/eval/evaluate.py` against hand-labeled frames of the target lot.
+
+No reference set has been labeled yet (2026-11-17), so there is no accuracy evidence. The harness itself was checked on hand-built cases and a two-frame synthetic set, which is not evidence for any requirement.
+
 ## R-04: Update interval
 
 ### R-04 timing run: 2026-11-17 04:03

@@ -16,32 +16,30 @@ import cv2
 import numpy as np
 from flask import Flask, jsonify, render_template, request, send_file
 
+import detectors
+from detectors import DETECTION_CONFIDENCE_FLOOR, DetectorError, ModelManager  # noqa: F401 (re-exported for scripts)
 from sources import SourceWorker, parse_target
 
-try:
-    from ultralytics import YOLO
-except ImportError:  # Optional for lightweight demo mode.
-    YOLO = None
-
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_DIR = BASE_DIR / "config"  # files you edit: slot polygons and settings
+CONFIG_DIR = BASE_DIR / "config"  # files you edit: slot polygons and settings (gitignored, created on first run)
 DATA_DIR = BASE_DIR / "data"  # generated output: occupancy history
-MODELS_DIR = BASE_DIR / "models"  # detection model weights (.pt)
+MODELS_DIR = BASE_DIR / "models"  # downloaded detection models (gitignored)
 CONFIG_PATH = CONFIG_DIR / "slots.json"
 SETTINGS_PATH = CONFIG_DIR / "settings.txt"
 HISTORY_PATH = DATA_DIR / "occupancy_history.csv"
 DEFAULT_LOT_NAME = "Lot 01"
 DEFAULT_REVIEW_THRESHOLD = 0.7
 DEFAULT_OVERLAP_THRESHOLD = 0.4
-DEFAULT_MODEL_PATH = "yolo11s.pt"
+DEFAULT_MODEL = detectors.DEFAULT_MODEL_ID  # downloaded automatically on first run
 # Seconds between sampled frames (video time for files, wall-clock time for live sources).
 # With the dashboard polling every 2 s this keeps updates within R-04's 5 s.
 DEFAULT_SAMPLE_INTERVAL_S = 2.0
 SAMPLE_INTERVAL_RANGE_S = (0.2, 60.0)
 HISTORY_COLUMNS = ["timestamp", "slot_id", "status", "confidence", "source", "frame_time_s"]
-VEHICLE_CLASS_IDS = (2, 3, 5, 7)  # COCO: car, motorcycle, bus, truck
-# Keep weak detections: they should push a slot to "unknown" rather than read as free (R-07).
-DETECTION_CONFIDENCE_FLOOR = 0.1
+# Model states in which frames can be (or are about to be) processed; anything else
+# means no usable model, and only then may the dashboard show demo data.
+USABLE_MODEL_STATES = ("ready", "loading")
+PREPARING_MODEL_STATES = ("ready", "loading", "downloading")
 
 
 class DetectionError(RuntimeError):
@@ -61,19 +59,20 @@ app = Flask(
     static_url_path="/static",
 )
 state_lock = threading.Lock()  # guards the latest_frame_* globals and history writes
-model_lock = threading.Lock()  # guards loading the model
 inference_lock = threading.Lock()  # one inference at a time; the model is shared across threads
 source_lock = threading.Lock()  # guards active_source
 active_source: SourceWorker | None = None
-model = None
-model_loaded_path: Path | None = None
-model_failed_path: Path | None = None
+# Installs and loads detection models. Its status calls never block; loading happens
+# on a background thread or in detect_vehicles, never while state_lock is held.
+models = ModelManager(MODELS_DIR)
 latest_frame_snapshot: dict[str, Any] | None = None
 latest_frame = None
 latest_frame_detections = None
 latest_frame_source = "latest frame"
 latest_frame_time_s: float | None = None
 latest_frame_captured_at: datetime | None = None
+latest_frame_processed_at: datetime | None = None
+latest_frame_model: str | None = None
 
 DEFAULT_SLOTS = [
     {"id": "A01", "points": [[12, 18], [27, 17], [29, 39], [13, 40]]},
@@ -110,14 +109,18 @@ def capture_time(recorded_at: datetime | None, frame_time_s: float | None) -> da
 
 
 def load_slots() -> list[dict[str, Any]]:
-    if CONFIG_PATH.exists():
-        try:
-            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                return data
-        except (OSError, json.JSONDecodeError):
-            pass
-    return DEFAULT_SLOTS.copy()
+    """Slot polygons from config/slots.json. On first run the file is created from
+    DEFAULT_SLOTS; an unreadable file is left alone and the defaults are used."""
+    if not CONFIG_PATH.exists():
+        save_slots(DEFAULT_SLOTS)
+        return [dict(slot) for slot in DEFAULT_SLOTS]
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return [dict(slot) for slot in DEFAULT_SLOTS]
 
 
 def save_slots(slots: list[dict[str, Any]]) -> None:
@@ -157,9 +160,12 @@ def load_settings() -> dict[str, Any]:
         "review_threshold": unit_interval(settings.get("review_threshold"), DEFAULT_REVIEW_THRESHOLD),
         "overlap_threshold": unit_interval(settings.get("overlap_threshold"), DEFAULT_OVERLAP_THRESHOLD),
         "sample_interval_s": sample_interval(settings.get("sample_interval_s")),
-        "model_path": str(settings.get("model_path") or DEFAULT_MODEL_PATH),
+        # A model id such as "ultralytics/yolo11s". Older files had `model_path`
+        # (e.g. "yolo11s.pt"), which is converted here and dropped.
+        "model": detectors.normalize_model_id(str(settings.get("model") or settings.get("model_path") or DEFAULT_MODEL)),
     }
-    if not SETTINGS_PATH.exists() or set(normalized) - set(settings):
+    if settings != normalized:
+        # First run, a missing key, or an older format: write the canonical file.
         SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
         SETTINGS_PATH.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
     return normalized
@@ -211,62 +217,95 @@ def append_history(
             writer.writerow([timestamp, result["id"], result["status"], result["confidence"], source, offset])
 
 
-def resolve_model_path() -> Path:
-    """SLOTSIGHT_MODEL overrides settings.txt. Relative paths resolve against models/,
-    falling back to the app folder so a value like "models/yolo11s.pt" also works."""
-    path = Path(os.environ.get("SLOTSIGHT_MODEL") or load_settings()["model_path"])
-    if path.is_absolute():
-        return path
-    in_models = MODELS_DIR / path
-    if in_models.exists() or not (BASE_DIR / path).exists():
-        return in_models
-    return BASE_DIR / path
+def model_overridden() -> bool:
+    return bool(os.environ.get("SLOTSIGHT_MODEL", "").strip())
 
 
-def get_model():
-    """Return the loaded detector, reloading it when the configured path changes."""
-    global model, model_loaded_path, model_failed_path
-    path = resolve_model_path()
-    current = model
-    if current is not None and model_loaded_path == path:
-        return current
-    with model_lock:
-        if model is not None and model_loaded_path == path:
-            return model
-        model, model_loaded_path = None, None
-        if YOLO is None or not path.exists() or model_failed_path == path:
-            return None
-        try:
-            loaded = YOLO(str(path))
-            # The first inference is several times slower (lazy setup); pay it at load
-            # time rather than on the first real frame, so it never delays an update (R-04).
-            loaded(np.zeros((640, 640, 3), dtype=np.uint8), verbose=False)
-            model, model_loaded_path = loaded, path
-        except Exception:
-            app.logger.exception("Could not load detection model from %s", path)
-            model_failed_path = path
-        return model
+def configured_model_id() -> str:
+    """The model to use: SLOTSIGHT_MODEL (an id or a legacy .pt path) overrides settings.txt."""
+    if model_overridden():
+        return detectors.normalize_model_id(os.environ["SLOTSIGHT_MODEL"])
+    return load_settings()["model"]
+
+
+def model_status() -> dict[str, Any]:
+    """Non-blocking state of the configured model (safe to call under state_lock)."""
+    return models.status(configured_model_id())
+
+
+def model_problem(status: dict[str, Any]) -> str:
+    """What stops frames from being processed, as a message for the user."""
+    hints = {
+        "downloading": "It is still downloading; try again in a moment.",
+        "missing": "Install it under Configure slots > Detection model, or run: python slotsight/scripts/models.py install " + status["id"],
+        "needs_package": "Its Python package is missing: " + status["message"],
+    }
+    return f"Detection model {status['name']} is not ready ({status['state']}). {hints.get(status['state'], status['message'])}"
 
 
 def detect_vehicles(frame) -> list[tuple[float, float, float, float, float]]:
     """Return vehicle boxes as (x1, y1, x2, y2, confidence) in pixels.
 
-    Raises DetectionError when no model is loaded or inference fails, so a failure
-    can never be mistaken for an empty lot.
+    Loads the configured model if needed (blocking, so never call this while holding
+    state_lock). Raises DetectionError when no model can be used or inference fails,
+    so a failure can never be mistaken for an empty lot.
     """
-    detector = get_model()
-    if detector is None:
-        raise DetectionError(
-            "No detection model is loaded. Install ultralytics, put the model in models/ and set model_path in config/settings.txt.",
-            status_code=503,
-        )
+    status = model_status()
+    if status["state"] not in USABLE_MODEL_STATES:
+        raise DetectionError(model_problem(status), status_code=503)
+    try:
+        detector = models.require(status["id"])
+    except DetectorError as error:
+        raise DetectionError(f"Could not load the detection model: {error}", status_code=503) from error
     try:
         with inference_lock:
-            prediction = detector(frame, verbose=False, conf=DETECTION_CONFIDENCE_FLOOR, classes=list(VEHICLE_CLASS_IDS))[0]
-        boxes = zip(prediction.boxes.xyxy.tolist(), prediction.boxes.conf.tolist(), prediction.boxes.cls.tolist())
-        return [(*box, float(confidence)) for box, confidence, class_id in boxes if int(class_id) in VEHICLE_CLASS_IDS]
+            return detector.detect(frame)
     except Exception as error:
         raise DetectionError(f"Vehicle detection failed: {error}") from error
+
+
+def prepare_model(download_default: bool = True) -> threading.Thread | None:
+    """Get the configured model ready in the background after startup.
+
+    The default model is downloaded on first run (R-03 needs a detector out of the
+    box); other models are only downloaded when the user installs them. Errors show
+    up in the dashboard's model status, never as demo data mixed into real readings.
+    """
+    status = model_status()
+    try:
+        if status["state"] == "missing" and download_default and status["id"] == DEFAULT_MODEL:
+            app.logger.warning("Downloading the default detection model %s on first run...", status["name"])
+            models.start(status["id"], download=True, load=True)
+        elif status["state"] == "loading":
+            models.start(status["id"], download=False, load=True)
+        elif status["state"] not in ("ready", "downloading"):
+            app.logger.warning(model_problem(status))
+    except DetectorError as error:
+        app.logger.warning("Model preparation skipped: %s", error)
+    return None
+
+
+def require_model_blocking(download_default: bool = True) -> dict[str, Any]:
+    """For scripts: install the default model if missing, then load the configured model.
+
+    Returns the final model status; raises DetectionError when no model can be used.
+    """
+    model_id = configured_model_id()
+    status = models.status(model_id)
+    if status["state"] == "missing" and download_default and model_id == DEFAULT_MODEL:
+        print(f"Downloading {status['name']} (first run)...", flush=True)
+        try:
+            models.install(model_id)
+        except DetectorError as error:
+            raise DetectionError(str(error), status_code=503) from error
+        status = models.status(model_id)
+    if status["state"] not in USABLE_MODEL_STATES:
+        raise DetectionError(model_problem(status), status_code=503)
+    try:
+        models.require(model_id)
+    except DetectorError as error:
+        raise DetectionError(str(error), status_code=503) from error
+    return models.status(model_id)
 
 
 def slot_polygon_pixels(slot: dict[str, Any], width: int, height: int) -> np.ndarray:
@@ -324,6 +363,14 @@ def classify_frame(frame, slots: list[dict[str, Any]], detections, overlap_thres
     return results
 
 
+def apply_review_threshold(results: list[dict[str, Any]], review_threshold: float) -> list[dict[str, Any]]:
+    """Show any slot below `review_threshold` confidence as "unknown" rather than a guess (R-07)."""
+    for result in results:
+        if result["confidence"] < review_threshold:
+            result["status"] = "unknown"
+    return results
+
+
 def demo_results(slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Stable sample state so the dashboard is demonstrable without a model. Never used for real frames."""
     results = []
@@ -363,47 +410,57 @@ def snapshot(
     record: bool = False,
     frame_time_s: float | None = None,
     captured_at: datetime | None = None,
+    processed_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Build the dashboard payload.
 
     With a frame: classify it from `detections` (detected here if not given) and,
-    if `record` is set, append the reading to the history.
+    if `record` is set, append the reading to the history. `updated_at` is when
+    the frame was processed (`processed_at`, default now), so re-classifying an
+    old frame after a settings change does not make it look newer (R-06).
     Without a frame: demo data when no model is loaded, otherwise every slot is
     "unknown" until a frame is processed. These readings are never recorded.
     """
     slots = load_slots()
     settings = load_settings()
-    has_model = get_model() is not None
+    current_model = model_status()
+    # Demo data only when there is no usable model at all; while one downloads or
+    # loads, slots stay "unknown" instead.
+    has_model = current_model["state"] in PREPARING_MODEL_STATES
+    updated_at: str | None = None
     if frame is not None:
         if detections is None:
             detections = detect_vehicles(frame)
         results = classify_frame(frame, slots, detections, settings["overlap_threshold"])
         source = source or "latest frame"
+        updated_at = (processed_at or datetime.now(timezone.utc)).isoformat(timespec="seconds")
     elif has_model:
         results, source, record = waiting_results(slots), "none", False
     else:
         results, source, record = demo_results(slots), "demo", False
+        updated_at = now_iso()
 
     review_threshold = settings["review_threshold"]
-    for result in results:
-        if result["confidence"] < review_threshold:
-            result["status"] = "unknown"
+    apply_review_threshold(results, review_threshold)
     if record:
         append_history(results, source, frame_time_s, captured_at)
     occupied = sum(result["status"] == "occupied" for result in results)
     unknown = sum(result["status"] == "unknown" for result in results)
     for result, slot in zip(results, slots):
         result["points"] = slot["points"]
+        # Every slot is re-read on every frame, so each slot's last update is the frame's.
+        result["updated_at"] = updated_at
     response = {
         "slots": results,
         "total": len(results),
         "free": len(results) - occupied - unknown,
         "unknown": unknown,
-        "updated_at": now_iso(),
+        "updated_at": updated_at,
         "source": source,
         "frame_time_s": None if frame_time_s is None else round(frame_time_s, 2),
         "captured_at": captured_at.isoformat(timespec="seconds") if captured_at else None,
-        "model": "YOLO" if has_model else "demo classifier",
+        "model": (latest_frame_model or current_model["name"]) if frame is not None else (current_model["name"] if has_model else "demo classifier"),
+        "model_status": current_model,
         "lot_name": settings["lot_name"],
         "review_threshold": review_threshold,
         "overlap_threshold": settings["overlap_threshold"],
@@ -426,6 +483,7 @@ def reclassify_latest_frame() -> None:
             latest_frame_detections,
             frame_time_s=latest_frame_time_s,
             captured_at=latest_frame_captured_at,
+            processed_at=latest_frame_processed_at,
         )
 
 
@@ -438,14 +496,22 @@ def store_reading(
 ) -> dict[str, Any]:
     """Make `frame` the latest reading and append it to the history. Caller holds state_lock."""
     global latest_frame_snapshot, latest_frame, latest_frame_detections, latest_frame_source
-    global latest_frame_time_s, latest_frame_captured_at
+    global latest_frame_time_s, latest_frame_captured_at, latest_frame_processed_at, latest_frame_model
     latest_frame = frame
+    latest_frame_model = model_status()["name"]
     latest_frame_detections = detections
     latest_frame_source = source
     latest_frame_time_s = frame_time_s
     latest_frame_captured_at = captured_at
+    latest_frame_processed_at = datetime.now(timezone.utc)
     latest_frame_snapshot = snapshot(
-        frame, source, detections, record=True, frame_time_s=frame_time_s, captured_at=captured_at
+        frame,
+        source,
+        detections,
+        record=True,
+        frame_time_s=frame_time_s,
+        captured_at=captured_at,
+        processed_at=latest_frame_processed_at,
     )
     return latest_frame_snapshot
 
@@ -492,7 +558,11 @@ def source_status() -> dict[str, Any] | None:
 
 
 def model_unavailable():
-    return jsonify({"error": "No detection model is loaded. Install ultralytics, put the model in models/ and set model_path in config/settings.txt."}), 503
+    """503 response when frames can't be processed yet, or None when the model is usable."""
+    status = model_status()
+    if status["state"] in USABLE_MODEL_STATES:
+        return None
+    return jsonify({"error": model_problem(status), "model_status": status}), 503
 
 
 @app.get("/")
@@ -601,9 +671,10 @@ def process_video_upload(filename: str, raw: bytes, recorded_at: datetime | None
     if not is_readable_video(path):
         Path(path).unlink(missing_ok=True)
         return jsonify({"error": "Upload a readable image or video file."}), 400
-    if get_model() is None:
+    unavailable = model_unavailable()
+    if unavailable is not None:
         Path(path).unlink(missing_ok=True)
-        return model_unavailable()
+        return unavailable
     worker = start_source("file", path, filename, cleanup_path=path, recorded_at=recorded_at)
     interval = worker.interval_s
     return jsonify({"job": worker.status(), "message": f"Processing {filename}: one frame every {interval:g} s of video."}), 202
@@ -627,8 +698,9 @@ def set_source():
         recorded_at = parse_recorded_at(payload.get("recorded_at")) if kind == "file" else None
     except ValueError:
         return jsonify({"error": "Recorded-at must be a date and time, e.g. 2026-11-17T08:30."}), 400
-    if get_model() is None:
-        return model_unavailable()
+    unavailable = model_unavailable()
+    if unavailable is not None:
+        return unavailable
     worker = start_source(kind, target, name, realtime=bool(payload.get("realtime")), recorded_at=recorded_at)
     return jsonify({"job": worker.status(), "message": f"Reading {name}: one frame every {worker.interval_s:g} s."}), 202
 
@@ -640,6 +712,48 @@ def stop_source():
         if worker is not None:
             worker.stop()
     return jsonify({"job": source_status()})
+
+
+@app.get("/api/models")
+def list_models():
+    """Every model SlotSight can use, whether it is installed, and the running install/load job."""
+    active = configured_model_id()
+    return jsonify({"models": models.catalogue(active), "active": active, "overridden": model_overridden(), "job": models.job()})
+
+
+@app.post("/api/models/install")
+def install_model():
+    """Download a model's weights in the background (progress arrives through GET /api/models)."""
+    model_id = str((request.get_json(silent=True) or {}).get("id", ""))
+    if model_id not in detectors.MODELS:
+        return jsonify({"error": f"Unknown model {model_id!r}."}), 404
+    try:
+        job = models.start(model_id, download=True, load=False)
+    except DetectorError as error:
+        return jsonify({"error": str(error)}), 409
+    return jsonify({"job": job, "message": f"Installing {detectors.MODELS[model_id].name}."}), 202
+
+
+@app.post("/api/models/select")
+def select_model():
+    """Make an installed model the active one and load it in the background."""
+    model_id = str((request.get_json(silent=True) or {}).get("id", ""))
+    if model_overridden():
+        return jsonify({"error": "SLOTSIGHT_MODEL is set, so it decides the model. Unset it to choose here."}), 409
+    try:
+        spec = detectors.spec_for(model_id, MODELS_DIR)
+    except DetectorError as error:
+        return jsonify({"error": str(error)}), 404
+    status = models.status(model_id)
+    if status["state"] not in ("ready", "loading", "error"):
+        return jsonify({"error": model_problem(status)}), 409
+    try:
+        job = None if status["state"] == "ready" else models.start(model_id, download=False, load=True)
+    except DetectorError as error:
+        return jsonify({"error": str(error)}), 409
+    with state_lock:
+        save_settings(model=model_id)
+    return jsonify({"job": job, "active": model_id, "message": f"Using {spec.name}. New frames use it; the last reading is unchanged."})
 
 
 @app.get("/api/history.csv")
@@ -669,4 +783,10 @@ def export_excel():
 
 if __name__ == "__main__":
     ensure_history()
-    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "5000")), debug=True)
+    load_slots()  # creates config/slots.json and settings.txt on first run
+    debug = True
+    # With the debug reloader, this block runs in a watcher process and in the serving
+    # child; only the child (WERKZEUG_RUN_MAIN) should download or load the model.
+    if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        prepare_model()
+    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "5000")), debug=debug)

@@ -5,6 +5,7 @@ const state = {
   reviewThreshold: 0.7,
   timer: null,
   editing: false,
+  hoverId: null, // slot under the pointer, so the tooltip follows each refresh
 };
 // Dashboard poll interval. Sources sample every 2 s by default, so a change
 // reaches the screen within about 2 s + processing + 2 s, under R-04's 5 s.
@@ -21,35 +22,89 @@ function timeOnly(iso) {
   });
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+const STATUSES = ["occupied", "vacant", "unknown"];
+// A shape as well as a colour, so status reads without relying on colour alone.
+const STATUS_GLYPHS = { occupied: "\u25CF", vacant: "\u25CB", unknown: "?" };
+
+function statusOf(item) {
+  return STATUSES.includes(item.status) ? item.status : "unknown";
+}
+
+function slotLabel(item) {
+  const time = item.updated_at ? ` / ${timeOnly(item.updated_at)}` : "";
+  return `${item.id} / ${statusOf(item)} / ${Math.round((item.confidence ?? 0) * 100)}% confidence${time}`;
+}
+
+// R-06: every slot is filled in its status colour, carries a pinned ID chip,
+// and shows its status, confidence and last-update time on hover or focus.
 function renderMap(data) {
   state.slots = data.slots || [];
   const layer = $("slotLayer");
-  layer.innerHTML = "";
+  layer.replaceChildren();
+  const shapes = document.createElementNS(SVG_NS, "svg");
+  shapes.setAttribute("class", "slot-shapes");
+  shapes.setAttribute("viewBox", "0 0 100 100");
+  shapes.setAttribute("preserveAspectRatio", "none");
+  shapes.setAttribute("aria-hidden", "true");
+  layer.appendChild(shapes);
   state.slots.forEach((item, index) => {
     const points = state.slotConfig?.[index]?.points || item.points;
     if (!points?.length) return;
+    const status = statusOf(item);
+
+    const shape = document.createElementNS(SVG_NS, "polygon");
+    shape.setAttribute("points", points.map(([x, y]) => `${x},${y}`).join(" "));
+    shape.setAttribute("class", `slot-shape status-${status}`);
+    shapes.appendChild(shape);
+
     const hit = document.createElement("button");
     hit.type = "button";
-    hit.className = "slot-hit";
+    hit.className = `slot-hit status-${status}`;
     hit.style.clipPath = `polygon(${points.map(([x, y]) => `${x}% ${y}%`).join(",")})`;
-    hit.setAttribute(
-      "aria-label",
-      `${item.id}, ${item.status}, ${Math.round(item.confidence * 100)}% confidence`,
-    );
-    hit.addEventListener("pointerenter", (event) =>
-      showConfidence(item, event),
-    );
+    hit.setAttribute("aria-label", slotLabel(item));
+    hit.addEventListener("pointerenter", (event) => showConfidence(item, event));
     hit.addEventListener("pointermove", moveConfidence);
     hit.addEventListener("pointerleave", hideConfidence);
+    hit.addEventListener("focus", () => showConfidence(item));
+    hit.addEventListener("blur", hideConfidence);
     layer.appendChild(hit);
+
+    const chip = document.createElement("span");
+    chip.className = `slot-chip status-${status}`;
+    chip.setAttribute("aria-hidden", "true");
+    // Pin the chip at the polygon's centre, kept far enough from the edges to stay readable.
+    const centre = (axis) => points.reduce((sum, point) => sum + Number(point[axis]), 0) / points.length;
+    chip.style.left = `${Math.min(95, Math.max(5, centre(0)))}%`;
+    chip.style.top = `${Math.min(96, Math.max(4, centre(1)))}%`;
+    const glyph = document.createElement("b");
+    glyph.textContent = STATUS_GLYPHS[status];
+    chip.append(item.id, glyph);
+    layer.appendChild(chip);
   });
   $("mapFootnote").textContent = `Polygon view / ${state.slots.length} slots`;
+  // The slot buttons were rebuilt, so no new pointer event fires for a still pointer:
+  // refresh an open tooltip from the new data instead of leaving the old reading.
+  if (state.hoverId !== null) {
+    const hovered = state.slots.find((item) => item.id === state.hoverId);
+    if (hovered) $("confidenceTooltip").textContent = slotLabel(hovered);
+    else hideConfidence();
+  }
   if (state.editing) renderEditor();
+}
+
+function renderMapStamp(data) {
+  const parts = [`Updated ${timeOnly(data.updated_at)}`];
+  if (data.captured_at) parts.push(`captured ${timeOnly(data.captured_at)}`);
+  else if (data.frame_time_s != null) parts.push(`video ${seconds(data.frame_time_s)}`);
+  if (data.source === "demo") parts.push("demo data");
+  $("mapStamp").textContent = parts.join(" / ");
 }
 
 function showConfidence(item, event) {
   const tooltip = $("confidenceTooltip");
-  tooltip.textContent = `${item.id} / ${item.status} / ${Math.round(item.confidence * 100)}% confidence`;
+  state.hoverId = item.id;
+  tooltip.textContent = slotLabel(item);
   tooltip.hidden = false;
   moveConfidence(event);
 }
@@ -57,11 +112,18 @@ function showConfidence(item, event) {
 function moveConfidence(event) {
   const map = $("lotMap").getBoundingClientRect();
   const tooltip = $("confidenceTooltip");
-  tooltip.style.left = `${Math.min(map.width - 190, Math.max(10, event.clientX - map.left + 12))}px`;
+  if (!event) {
+    // Keyboard focus: pin the tooltip to the top-left corner of the map.
+    tooltip.style.left = "10px";
+    tooltip.style.top = "10px";
+    return;
+  }
+  tooltip.style.left = `${Math.min(map.width - tooltip.offsetWidth - 10, Math.max(10, event.clientX - map.left + 12))}px`;
   tooltip.style.top = `${Math.min(map.height - 34, Math.max(10, event.clientY - map.top - 36))}px`;
 }
 
 function hideConfidence() {
+  state.hoverId = null;
   $("confidenceTooltip").hidden = true;
 }
 
@@ -154,18 +216,35 @@ async function saveVisualConfig() {
 }
 
 function renderActivity(data) {
-  const colors = {
-    occupied: "dot-occupied",
-    vacant: "dot-vacant",
-    unknown: "dot-unknown",
-  };
-  $("activityList").innerHTML = (data.slots || [])
-    .map(
-      (item) => `
-    <div class="activity-row"><span><i class="status-dot ${colors[item.status] || "dot-unknown"}"></i>${item.id}</span><span class="activity-status">${item.status}</span><span class="activity-time">${timeOnly(data.updated_at)}</span></div>
-  `,
-    )
-    .join("");
+  const rows = (data.slots || []).map((item) => {
+    const status = statusOf(item);
+    const row = document.createElement("div");
+    row.className = "activity-row";
+    const name = document.createElement("span");
+    const dot = document.createElement("i");
+    dot.className = `status-dot dot-${status}`;
+    name.append(dot, item.id);
+    const label = document.createElement("span");
+    label.className = "activity-status";
+    label.textContent = status;
+    const time = document.createElement("span");
+    time.className = "activity-time";
+    time.textContent = timeOnly(item.updated_at ?? data.updated_at);
+    row.append(name, label, time);
+    return row;
+  });
+  $("activityList").replaceChildren(...rows);
+}
+
+// System health card: the model in use, or what is happening to it.
+function modelLabel(data) {
+  const status = data.model_status;
+  if (!status) return data.model || "Demo";
+  if (status.state === "ready") return status.name;
+  if (status.state === "downloading")
+    return status.progress == null ? "Downloading..." : `Downloading ${Math.round(status.progress * 100)}%`;
+  if (status.state === "loading") return "Loading model...";
+  return "Demo (no model)";
 }
 
 function render(data) {
@@ -179,12 +258,13 @@ function render(data) {
   $("updatedAt").textContent = timeOnly(data.updated_at);
   const sourceLabels = { demo: "Demo source", none: "No frame yet" };
   $("sourceLabel").textContent = sourceLabels[data.source] ?? data.source;
-  $("modelLabel").textContent = data.model === "YOLO" ? "YOLO live" : "Demo";
+  $("modelLabel").textContent = modelLabel(data);
   state.lotName = data.lot_name || state.lotName;
   state.reviewThreshold = data.review_threshold ?? state.reviewThreshold;
   $("lotNameLabel").textContent = state.lotName;
   $("lotNameHeading").textContent = state.lotName;
   renderMap(data);
+  renderMapStamp(data);
   renderActivity(data);
   if ("job" in data) renderJob(data.job);
   if (data.preview_image) {
@@ -380,7 +460,7 @@ $("lotMap").addEventListener("pointerup", (event) => {
       [left, bottom],
     ];
     state.slotConfig.push({ id, points });
-    state.slots.push({ id, status: "vacant", confidence: 1, points });
+    state.slots.push({ id, status: "unknown", confidence: 0, points });
     renderEditor();
     renderMap({ slots: state.slots });
   }
@@ -448,6 +528,107 @@ $("stopSource").addEventListener("click", async () => {
   }
 });
 
+// --- Detection model picker (Configure dialog) ---
+let modelTimer = null;
+
+function modelState(model, job) {
+  const running = job && job.state === "running" && job.id === model.id;
+  if (running && job.action === "install")
+    return job.progress == null ? "Downloading..." : `Downloading ${Math.round(job.progress * 100)}%`;
+  if (running) return "Loading...";
+  if (model.status.state === "error") return "Error";
+  if (model.active && model.status.state === "ready") return "In use";
+  if (model.active) return "Selected";
+  if (!model.installed) return "Not installed";
+  if (!model.package_available) return "Needs package";
+  return "Installed";
+}
+
+function renderModels(data) {
+  const busy = data.job && data.job.state === "running";
+  $("modelPickerNote").textContent = data.overridden
+    ? "Set by SLOTSIGHT_MODEL"
+    : "COCO-trained; only car, motorcycle, bus and truck are used";
+  const rows = data.models.map((model) => {
+    const row = document.createElement("div");
+    row.className = "model-row";
+    row.classList.toggle("is-active", model.active);
+    const info = document.createElement("div");
+    info.className = "model-info";
+    const name = document.createElement("strong");
+    name.textContent = model.name;
+    const meta = document.createElement("small");
+    meta.textContent = `${model.provider} / ${model.licence} / ${model.size_mb ? `${model.size_mb} MB` : "local file"}`;
+    info.append(name, meta);
+    const detail = document.createElement("small");
+    detail.className = "model-note";
+    if (model.status.state === "error") {
+      detail.textContent = model.status.message;
+      detail.classList.add("is-error");
+    } else if (!model.package_available) {
+      detail.textContent = `Needs the Python package: pip install ${model.pip}`;
+    } else {
+      detail.textContent = model.note;
+    }
+    if (detail.textContent) info.append(detail);
+
+    const state = document.createElement("span");
+    state.className = "model-state";
+    state.textContent = modelState(model, data.job);
+
+    const actions = document.createElement("div");
+    actions.className = "model-actions";
+    if (!model.installed && model.size_mb) {
+      actions.append(modelButton("Install", busy, () => modelAction("/api/models/install", model.id)));
+    } else if (model.installed && !model.active) {
+      actions.append(
+        modelButton("Use", busy || data.overridden || !model.package_available, () =>
+          modelAction("/api/models/select", model.id),
+        ),
+      );
+    }
+    row.append(info, state, actions);
+    return row;
+  });
+  $("modelList").replaceChildren(...rows);
+}
+
+function modelButton(label, disabled, onClick) {
+  const button = document.createElement("button");
+  button.type = "button"; // inside a method="dialog" form: never submit or close it
+  button.className = "map-edit-button";
+  button.textContent = label;
+  button.disabled = disabled;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+async function modelAction(url, id) {
+  const message = $("modelMessage");
+  try {
+    const data = await postSource(url, { id });
+    message.textContent = data.message || "";
+  } catch (error) {
+    message.textContent = error.message;
+  }
+  await loadModels();
+  refresh();
+}
+
+async function loadModels() {
+  clearTimeout(modelTimer);
+  try {
+    const response = await fetch("/api/models", { cache: "no-store" });
+    const data = await response.json();
+    renderModels(data);
+    // Follow a running install or load while the dialog is open.
+    if (data.job && data.job.state === "running" && $("configDialog").open)
+      modelTimer = setTimeout(loadModels, 1000);
+  } catch (error) {
+    $("modelMessage").textContent = "Could not list the detection models.";
+  }
+}
+
 $("openConfig").addEventListener("click", async () => {
   const response = await fetch("/api/status");
   const data = await response.json();
@@ -466,7 +647,9 @@ $("openConfig").addEventListener("click", async () => {
   );
   $("reviewThresholdValue").textContent = `${$("reviewThresholdInput").value}%`;
   $("configInput").value = JSON.stringify(slots, null, 2);
+  $("modelMessage").textContent = "";
   $("configDialog").showModal();
+  loadModels();
 });
 $("saveConfig").addEventListener("click", async (event) => {
   event.preventDefault();

@@ -12,7 +12,7 @@
     />
     <link
       rel="stylesheet"
-      href="{{ url_for('static', filename='style.css', v='2') }}"
+      href="{{ url_for('static', filename='style.css', v='4') }}"
     />
   </head>
   <body>
@@ -110,6 +110,7 @@
             <div id="slotLayer"></div>
             <div class="editor-layer" id="editorLayer" hidden></div>
             <div class="confidence-tooltip" id="confidenceTooltip" hidden></div>
+            <div class="map-stamp" id="mapStamp" aria-live="polite">Updated --:--:--</div>
           </div>
           <div class="map-footer">
             <div class="legend">
@@ -154,8 +155,8 @@
           </div>
           <p class="panel-copy">
             Upload a parking-lot image or video to classify the configured
-            polygons. Videos are sampled every few seconds of footage. Without
-            a detection model loaded, a demo feed keeps the dashboard moving.
+            polygons. Videos are sampled every few seconds of footage. Until a
+            detection model is installed, a demo feed keeps the dashboard moving.
           </p>
           <form id="uploadForm">
             <label class="upload-zone" for="sourceFile"
@@ -267,7 +268,15 @@
             value="70"
           />
         </label>
-        <textarea id="configInput" spellcheck="false"></textarea>
+        <section class="model-picker" aria-labelledby="modelPickerTitle">
+          <div class="model-picker-head">
+            <span id="modelPickerTitle">Detection model</span>
+            <small id="modelPickerNote"></small>
+          </div>
+          <div class="model-list" id="modelList"></div>
+          <p class="form-message" id="modelMessage" aria-live="polite"></p>
+        </section>
+        <textarea id="configInput" spellcheck="false" aria-label="Slot polygons (JSON)"></textarea>
         <div class="dialog-actions">
           <span class="form-message" id="configMessage"></span
           ><button class="button button-dark" id="saveConfig" value="default">
@@ -276,6 +285,6 @@
         </div>
       </form>
     </dialog>
-    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='4') }}"></script>
   </body>
 </html>

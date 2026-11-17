@@ -1,6 +1,6 @@
 """Measure SlotSight's status update interval on this machine (R-04 evidence).
 
-Runs a source through the real pipeline (frame sampling, YOLO detection, slot
+Runs a source through the real pipeline (frame sampling, vehicle detection, slot
 classification, snapshot and history write) and reports:
 
 - processing time per sampled frame
@@ -62,8 +62,10 @@ def main() -> int:
     args = parser.parse_args()
 
     slotsight.HISTORY_PATH = Path(args.history) if args.history else Path(tempfile.mkdtemp()) / "measure-history.csv"
-    if slotsight.get_model() is None:
-        print("No detection model is loaded; install ultralytics and check model_path in settings.txt.", file=sys.stderr)
+    try:
+        model = slotsight.require_model_blocking()  # downloads the default model on first run
+    except slotsight.DetectionError as error:
+        print(error, file=sys.stderr)
         return 1
     try:
         kind, target, name = parse_target(args.source)
@@ -100,7 +102,7 @@ def main() -> int:
 
 - Source: {name} ({kind}{', played at recorded speed' if kind == 'file' else ''}){f' - {args.note}' if args.note else ''}
 - Machine: {platform.processor() or platform.machine()} / {device_name()} / Python {platform.python_version()}
-- Model: {slotsight.resolve_model_path().name}; frame size {size}; {len(slotsight.load_slots())} slots
+- Model: {model['name']} ({model['id']}); frame size {size}; {len(slotsight.load_slots())} slots
 - Sample interval {settings['sample_interval_s']:g} s; dashboard poll {DASHBOARD_POLL_S:g} s; {status['frames_processed']} readings over {args.seconds:g} s
 
 | Measure | Mean | p95 | Max |

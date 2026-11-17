@@ -220,7 +220,18 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# SlotSight: detection models you download go in slotsight/models/ and stay out of git;
-# only the default model is tracked.
+# SlotSight: detection models are downloaded into slotsight/models/ (on first run, from
+# the dashboard, or with scripts/models.py) and never committed; only its README is tracked.
 slotsight/models/*
-!slotsight/models/yolo11s.pt
+!slotsight/models/README.md
+
+# SlotSight: your lot's configuration is local. The app creates both files from the
+# defaults in app.py on first run.
+slotsight/config/slots.json
+slotsight/config/settings.txt
+
+# SlotSight evaluation: labeled frames, the detection cache and per-row results stay
+# local; only the labels (slotsight/eval/labels.csv) are tracked.
+slotsight/data/eval_frames/
+slotsight/data/eval_cache.json
+slotsight/data/eval_predictions.csv

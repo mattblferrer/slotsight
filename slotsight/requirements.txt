@@ -2,5 +2,9 @@ Flask>=3.0,<4.0
 opencv-python-headless>=4.9,<5.0
 numpy>=1.26,<3.0
 openpyxl>=3.1,<4.0
-# Optional detector support: install ultralytics and place a compatible .pt model in the project root.
-# ultralytics>=8.3,<9.0
+# Default detector (YOLO11 small, downloaded into models/ on first run). AGPL-3.0: see models/README.md.
+ultralytics>=8.4,<9.0
+# Optional providers; install only the ones whose models you want to use:
+# transformers>=5.0      # Hugging Face RT-DETRv2 (Apache-2.0)
+# rfdetr>=1.12           # Roboflow RF-DETR (Apache-2.0)
+# (The OpenCV YOLOX model needs nothing beyond opencv above.)

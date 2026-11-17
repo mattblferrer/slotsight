@@ -9,6 +9,13 @@
   --red: #f08e7d;
   --blue: #8db6ed;
   --yellow: #f6d879;
+  /* Slot status colours: legend swatches, map fills and chip edges. */
+  --vacant: #79bb63;
+  --vacant-edge: #3f8a2e;
+  --occupied: #f08e7d;
+  --occupied-edge: #c9533f;
+  --unknown: #f6d879;
+  --unknown-edge: #b38a12;
   --mono: "DM Mono", monospace;
   --sans: "Manrope", sans-serif;
 }
@@ -378,7 +385,7 @@ button {
 .confidence-tooltip {
   position: absolute;
   z-index: 8;
-  max-width: 190px;
+  max-width: calc(100% - 20px);
   padding: 8px 10px;
   border: 1px solid var(--line);
   background: rgba(23, 43, 37, 0.94);
@@ -432,35 +439,80 @@ button {
 .lot-map:after {
   bottom: 29px;
 }
-.slot {
+/* R-06: slot status on the map. Fill and outline share the legend colours;
+   the outline uses a darker tone so it stays visible over camera frames. */
+.slot-shapes {
   position: absolute;
-  z-index: 2;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.slot-shape {
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+  transition:
+    fill 0.2s,
+    stroke 0.2s;
+}
+.slot-shape.status-vacant {
+  fill: color-mix(in srgb, var(--vacant) 38%, transparent);
+  stroke: var(--vacant-edge);
+}
+.slot-shape.status-occupied {
+  fill: color-mix(in srgb, var(--occupied) 45%, transparent);
+  stroke: var(--occupied-edge);
+}
+.slot-shape.status-unknown {
+  fill: color-mix(in srgb, var(--unknown) 45%, transparent);
+  stroke: var(--unknown-edge);
+  stroke-dasharray: 4 3;
+}
+.lot-map.has-preview .slot-shape {
+  fill-opacity: 0.6;
+}
+.slot-hit:focus-visible {
+  outline: none;
+  background: rgba(255, 255, 255, 0.28);
+}
+.slot-chip {
+  position: absolute;
+  z-index: 1;
   transform: translate(-50%, -50%);
-  width: 13%;
-  height: 23%;
-  border: 2px solid var(--blue);
-  background: transparent;
-  display: flex;
+  display: inline-flex;
+  gap: 5px;
   align-items: center;
-  justify-content: center;
-  transition: 0.2s;
-}
-.slot:nth-child(n + 6) {
-  height: 23%;
-}
-.slot.occupied {
-  border-color: var(--red);
-  background: transparent;
-}
-.slot.unknown {
-  border-color: #d1af42;
-  background: transparent;
-}
-.slot-label {
-  font: 500 10px var(--mono);
+  padding: 2px 6px;
+  border-left: 3px solid;
+  background: rgba(255, 255, 255, 0.9);
   color: var(--ink);
-  background: rgba(255, 255, 255, 0.7);
-  padding: 3px;
+  font: 500 10px var(--mono);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.slot-chip b {
+  font-weight: 500;
+}
+.slot-chip.status-vacant {
+  border-color: var(--vacant-edge);
+}
+.slot-chip.status-occupied {
+  border-color: var(--occupied-edge);
+}
+.slot-chip.status-unknown {
+  border-color: var(--unknown-edge);
+}
+.map-stamp {
+  position: absolute;
+  z-index: 6;
+  top: 8px;
+  right: 8px;
+  padding: 4px 8px;
+  background: rgba(23, 43, 37, 0.88);
+  color: var(--white);
+  font: 10px var(--mono);
+  pointer-events: none;
 }
 .map-footer {
   display: flex;
@@ -486,13 +538,13 @@ button {
   background: var(--blue);
 }
 .legend-swatch.vacant {
-  background: #79bb63;
+  background: var(--vacant);
 }
 .legend-swatch.occupied {
-  background: var(--red);
+  background: var(--occupied);
 }
 .legend-swatch.unknown {
-  background: var(--yellow);
+  background: var(--unknown);
 }
 .map-footnote {
   font: 10px var(--mono);
@@ -746,6 +798,8 @@ footer {
 dialog {
   border: 1px solid var(--line);
   padding: 0;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
   box-shadow: 0 20px 70px rgba(23, 43, 37, 0.18);
 }
 dialog::backdrop {
@@ -808,6 +862,85 @@ dialog::backdrop {
 .config-field input[type="range"] {
   padding: 0;
   accent-color: var(--red);
+}
+.model-picker {
+  margin: 18px 0 12px;
+}
+.model-picker-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  justify-content: space-between;
+  align-items: baseline;
+  font: 10px var(--mono);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.model-picker-head small {
+  text-transform: none;
+  letter-spacing: 0;
+}
+.model-list {
+  margin-top: 7px;
+  border: 1px solid var(--line);
+  max-height: 260px;
+  overflow-y: auto;
+}
+.model-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.model-row:last-child {
+  border-bottom: 0;
+}
+.model-row.is-active {
+  background: #f4f9e4;
+  box-shadow: inset 3px 0 0 var(--mint-dark);
+}
+.model-info {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.model-info strong {
+  font-size: 13px;
+}
+.model-info small {
+  font: 10px var(--mono);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.model-note.is-error {
+  color: var(--occupied-edge);
+}
+.model-state {
+  font: 10px var(--mono);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.model-row.is-active .model-state {
+  color: var(--ink);
+  font-weight: 500;
+}
+.model-actions button {
+  min-width: 70px;
+}
+.model-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+@media (max-width: 560px) {
+  .model-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .model-actions {
+    grid-column: 1 / -1;
+  }
 }
 .dialog-actions {
   display: flex;
