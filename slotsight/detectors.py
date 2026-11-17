@@ -462,24 +462,26 @@ class ModelManager:
         try:
             spec = spec_for(model_id, self.models_dir)
         except DetectorError as error:
-            return {"id": model_id, "name": model_id, "state": "unknown", "message": str(error), "progress": None}
+            return {"id": model_id, "name": model_id, "state": "unknown", "message": str(error), "progress": None, "error": str(error)}
         with self._lock:
             job = self._job if self._job and self._job.model_id == model_id and self._job.state == "running" else None
             ready = self._detector_id == model_id and self._detector is not None
             error = self._errors.get(model_id)
-        base = {"id": model_id, "name": spec.name, "progress": None}
+        # `error` is the last install or load failure, kept so the dashboard can show it.
+        base = {"id": model_id, "name": spec.name, "progress": None, "error": error}
         if ready:
             return {**base, "state": "ready", "message": f"{spec.name} loaded"}
         if job:
             state = "downloading" if job.action == "install" else "loading"
             verb = "Downloading" if job.action == "install" else "Loading"
             return {**base, "state": state, "message": f"{verb} {spec.name}", "progress": job.as_dict()["progress"]}
-        if error:
-            return {**base, "state": "error", "message": error}
+        # Files first: a model whose download failed is still "missing", never selectable.
+        if not is_installed(spec, self.models_dir):
+            return {**base, "state": "missing", "message": error or f"{spec.name} is not installed"}
         if not package_available(spec.provider):
             return {**base, "state": "needs_package", "message": f"pip install {PROVIDERS[spec.provider].pip}"}
-        if not is_installed(spec, self.models_dir):
-            return {**base, "state": "missing", "message": f"{spec.name} is not installed"}
+        if error:
+            return {**base, "state": "error", "message": error}
         return {**base, "state": "loading", "message": f"{spec.name} loads on first use"}
 
     def catalogue(self, active_id: str) -> list[dict[str, Any]]:

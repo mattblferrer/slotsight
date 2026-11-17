@@ -12,7 +12,7 @@
     />
     <link
       rel="stylesheet"
-      href="{{ url_for('static', filename='style.css', v='4') }}"
+      href="{{ url_for('static', filename='style.css', v='5') }}"
     />
   </head>
   <body>
@@ -80,6 +80,8 @@
           >
         </article>
       </section>
+
+      <p class="model-alert" id="modelAlert" role="alert" hidden></p>
 
       <section class="workspace">
         <div class="panel map-panel">
@@ -285,6 +287,6 @@
         </div>
       </form>
     </dialog>
-    <script src="{{ url_for('static', filename='app.js', v='4') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='5') }}"></script>
   </body>
 </html>

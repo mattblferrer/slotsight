@@ -143,7 +143,7 @@ function mapPoint(event) {
 
 function renderEditor() {
   const editor = $("editorLayer");
-  editor.innerHTML = "";
+  editor.replaceChildren();
   state.slotConfig.forEach((slot, index) => {
     const xs = slot.points.map((point) => point[0]);
     const ys = slot.points.map((point) => point[1]);
@@ -163,8 +163,25 @@ function renderEditor() {
           `${((point[0] - left) / width) * 100},${((point[1] - top) / height) * 100}`,
       )
       .join(" ");
-    item.innerHTML = `<svg class="editor-polygon" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><polygon points="${polygonPoints}"></polygon></svg><span>${slot.id}</span><button type="button" class="editor-delete" data-delete-slot="${index}" title="Delete ${slot.id}" aria-label="Delete ${slot.id}">x</button>`;
-    const deleteButton = item.querySelector("button");
+    // Built with DOM calls: slot ids come from config and must never be parsed as HTML.
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "editor-polygon");
+    svg.setAttribute("viewBox", "0 0 100 100");
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("aria-hidden", "true");
+    const polygon = document.createElementNS(SVG_NS, "polygon");
+    polygon.setAttribute("points", polygonPoints);
+    svg.appendChild(polygon);
+    const label = document.createElement("span");
+    label.textContent = slot.id;
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "editor-delete";
+    deleteButton.dataset.deleteSlot = index;
+    deleteButton.title = `Delete ${slot.id}`;
+    deleteButton.setAttribute("aria-label", `Delete ${slot.id}`);
+    deleteButton.textContent = "x";
+    item.append(svg, label, deleteButton);
     deleteButton.style.left = "100%";
     deleteButton.style.top = "0%";
     slot.points.forEach((point, pointIndex) => {
@@ -244,7 +261,25 @@ function modelLabel(data) {
   if (status.state === "downloading")
     return status.progress == null ? "Downloading..." : `Downloading ${Math.round(status.progress * 100)}%`;
   if (status.state === "loading") return "Loading model...";
-  return "Demo (no model)";
+  if (status.state === "missing") return "Demo (no model)";
+  return "Model error";
+}
+
+// Explains, in plain words, why there are no real readings: no model installed
+// (demo data) or a model that can't be used (an error, never demo data).
+function renderModelAlert(data) {
+  const alert = $("modelAlert");
+  const status = data.model_status;
+  let text = "";
+  if (status && status.state === "missing") {
+    text = `No detection model is installed, so the map shows demo data.${status.error ? ` Last attempt: ${status.error}` : ""} Install one under Configure slots > Detection model.`;
+  } else if (status && ["error", "needs_package", "unknown"].includes(status.state)) {
+    const reason = status.state === "needs_package" ? `${status.name} needs its Python package: ${status.message}` : status.message;
+    text = `Detection model problem: ${reason}. No frames can be processed until it is fixed under Configure slots > Detection model.`;
+  }
+  alert.textContent = text;
+  alert.hidden = !text;
+  alert.classList.toggle("is-error", Boolean(status) && status.state !== "missing");
 }
 
 function render(data) {
@@ -256,9 +291,10 @@ function render(data) {
   $("occupiedCount").textContent = occupied;
   $("unknownCount").textContent = data.unknown ?? 0;
   $("updatedAt").textContent = timeOnly(data.updated_at);
-  const sourceLabels = { demo: "Demo source", none: "No frame yet" };
+  const sourceLabels = { demo: "Demo source", none: "No frame yet", "model error": "Model error" };
   $("sourceLabel").textContent = sourceLabels[data.source] ?? data.source;
   $("modelLabel").textContent = modelLabel(data);
+  renderModelAlert(data);
   state.lotName = data.lot_name || state.lotName;
   state.reviewThreshold = data.review_threshold ?? state.reviewThreshold;
   $("lotNameLabel").textContent = state.lotName;
@@ -562,8 +598,8 @@ function renderModels(data) {
     info.append(name, meta);
     const detail = document.createElement("small");
     detail.className = "model-note";
-    if (model.status.state === "error") {
-      detail.textContent = model.status.message;
+    if (model.status.error) {
+      detail.textContent = model.status.error;
       detail.classList.add("is-error");
     } else if (!model.package_available) {
       detail.textContent = `Needs the Python package: pip install ${model.pip}`;

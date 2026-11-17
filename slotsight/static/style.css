@@ -162,6 +162,20 @@ button {
   gap: 12px;
   margin-bottom: 14px;
 }
+.model-alert {
+  margin: 0 0 14px;
+  padding: 12px 16px;
+  border: 1px solid var(--unknown-edge);
+  border-left-width: 4px;
+  background: #fdf6dd;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.model-alert.is-error {
+  border-color: var(--occupied-edge);
+  background: #fdecea;
+}
 .stat-card {
   background: var(--white);
   border: 1px solid var(--line);

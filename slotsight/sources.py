@@ -142,6 +142,11 @@ class SourceWorker:
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    @property
+    def stopping(self) -> bool:
+        """True once stop() was called, even while a frame is still being processed."""
+        return self._stop.is_set()
+
     def status(self) -> dict[str, Any]:
         with self._lock:
             progress = None

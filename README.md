@@ -4,7 +4,7 @@ A lightweight parking occupancy dashboard for one fixed camera and one lot. It c
 
 ## Run locally
 
-From the repository root:
+Requires Python 3.11 or newer (tested on 3.14). From the repository root:
 
 ```powershell
 python -m venv .venv
@@ -13,7 +13,7 @@ pip install -r slotsight/requirements.txt
 python slotsight/app.py
 ```
 
-Open <http://127.0.0.1:5000>.
+Open <http://127.0.0.1:5000>. To work on the code with Flask's debugger and auto-reload, set `SLOTSIGHT_DEBUG=1` first (`$env:SLOTSIGHT_DEBUG = "1"` in PowerShell). It is off by default, because the debugger can run code sent from the browser.
 
 On first run the app creates `slotsight/config/slots.json` (a 12-slot sample layout) and `settings.txt` from its built-in defaults. It also downloads the default detection model, YOLO11 small (19 MB), from Ultralytics' GitHub release into `slotsight/models/`. The dashboard shows the download's progress, and slots show as unknown until the model is ready. This needs an internet connection once. If the download fails, the dashboard stays in a clearly labelled demo mode and shows the error under **Configure slots > Detection model**, where you can retry.
 
@@ -29,7 +29,7 @@ python slotsight/scripts/models.py use opencv/yolox-s
 
 Downloads are checked against published hashes and saved in `slotsight/models/` (not tracked by git). The RT-DETRv2 and RF-DETR models also need their Python package (`pip install transformers` or `pip install rfdetr`); the dashboard tells you which. The active model is the `model` setting in `settings.txt` (e.g. `"ultralytics/yolo11s"`), and the `SLOTSIGHT_MODEL` environment variable overrides it. Older `model_path` settings are converted automatically. See [`slotsight/models/README.md`](slotsight/models/README.md) for the full list, sizes and licences.
 
-Without a usable model, the dashboard runs in demo mode with sample data, which is never logged. With a model, slots show as unknown until a frame is processed, and a frame that can't be analysed returns an error instead of demo data.
+Only when no model is installed does the dashboard show demo data, and it is labelled as such and never logged. If the selected model is installed but can't be used (for example, it fails to load or its Python package is missing), the dashboard shows the error with every slot unknown, never demo data. With a working model, slots show as unknown until a frame is processed, and a frame that can't be analysed returns an error.
 
 ## Repository layout
 

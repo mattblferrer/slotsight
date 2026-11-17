@@ -61,12 +61,14 @@ pip install -r slotsight/requirements.txt   # includes ultralytics for the defau
 python slotsight/app.py                       # http://127.0.0.1:5000
 ```
 
+Python 3.11 or newer (the "recorded at" times end in `Z`, which `datetime.fromisoformat` accepts from 3.11). Don't reuse an f-string's own quote inside it (that needs 3.12; a test checks). `SLOTSIGHT_DEBUG=1` turns on Flask's debugger and reloader; it is off by default.
+
 The local `.venv` already has Flask, OpenCV, numpy, openpyxl, ultralytics, transformers and rfdetr installed (CPU-only torch; no CUDA on this laptop).
 
 ## Rules and pitfalls
 
 - The repo lives in OneDrive and is open in VS Code. Files have been deleted or recreated outside Claude's commands after moves: an archive was sent to the Recycle Bin, and a stray `settings.txt` reappeared. After moving or deleting files, re-check with `git status` and `ls`, and never assume an untracked file is still where it was.
-- **Never let demo data mix with real inference.** Demo output is only for when no frame or usable model is present (model state `missing`, `needs_package` or `error`). While a model downloads or loads, slots are "unknown", not demo. An empty detection list on a real frame means every slot is vacant. A detector error must show up as an error, never as demo data.
+- **Never let demo data mix with real inference.** Demo output is only for when no frame exists and no model is installed (model state `missing`). While a model downloads or loads, slots are "unknown". When an installed model is broken (`error`, `needs_package`, `unknown`), slots are "unknown", `source` is `"model error"` and the dashboard shows the error, never demo data. An empty detection list on a real frame means every slot is vacant. A detector error must show up as an error, never as demo data.
 - **GET endpoints must not write history.** Only processing a frame appends rows.
 - "Unknown" must protect against false "free" readings (R-07). Don't hard-code confidence values for vacant slots.
 - Keep defaults in sync across `app.py` constants (`DEFAULT_MODEL` comes from `detectors.DEFAULT_MODEL_ID`) and the UI defaults (slider, `POLL_MS` in `app.js`, `DASHBOARD_POLL_S` in the timing script). `settings.txt` is generated from them.
@@ -74,6 +76,9 @@ The local `.venv` already has Flask, OpenCV, numpy, openpyxl, ultralytics, trans
 - Resolve file paths against `BASE_DIR` (or `CONFIG_DIR`, `DATA_DIR`, `MODELS_DIR`), not the working directory. Editable config goes in `config/`, generated output in `data/`, and weights in `models/`. `sources.py` stays next to `app.py` because it's app code. `scripts/` is only for tools run by hand.
 - Threading: run inference and model loading outside `state_lock` (status polls must never wait on them). `snapshot()` uses only the non-blocking `models.status()`. `models.require()` blocks while loading and is called only from `detect_vehicles` and scripts. Model calls are serialised by `inference_lock`. Lock order is source_lock → state_lock → ModelManager's internal lock (held briefly); never take state_lock while holding inference_lock or inside ModelManager.
 - Build DOM from server or config data with `textContent` or element creation, not raw `innerHTML` interpolation.
+- Write config files only with `write_atomic` and read them with `read_config`. Never write over a config file that couldn't be read; fall back to the last good copy. GET endpoints must not create or rewrite any file (exports read the history under `state_lock` and parse it outside).
+- Validate slots with `slot_config_problem` (unique text ids, at least three points, at least `MIN_SLOT_AREA`). A zero-area slot must classify as unknown, never vacant.
+- In tests, scope temporary patches with `monkeypatch.context()`. `monkeypatch.undo()` also undoes the fixture's temporary paths and points the app at the user's real files.
 - Don't overwrite the user's `slots.json`, `settings.txt` or `occupancy_history.csv` during tests. Point `app.CONFIG_PATH`, `app.SETTINGS_PATH` and `app.HISTORY_PATH` at a temporary directory and use `app.app.test_client()`. Add `slotsight/` to `sys.path` to import `app`. To test first-run downloads, also set `app.MODELS_DIR` and `app.models = detectors.ModelManager(<temp dir>)`.
 - The user may have `python slotsight/app.py` running with Flask's debug reloader. Multi-file edits can restart it mid-change and stop it, so tell the user if their server on port 5000 has stopped.
 - The target hardware is a student laptop, CPU-only. Keep the inference rate in mind (R-04: on-screen updates every ≤5 s, measured end to end).

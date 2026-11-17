@@ -35,11 +35,19 @@ DEFAULT_MODEL = detectors.DEFAULT_MODEL_ID  # downloaded automatically on first 
 # With the dashboard polling every 2 s this keeps updates within R-04's 5 s.
 DEFAULT_SAMPLE_INTERVAL_S = 2.0
 SAMPLE_INTERVAL_RANGE_S = (0.2, 60.0)
+MAX_UPLOAD_MB = 100  # images and videos uploaded from the dashboard
+# Smallest slot accepted, in normalised units (percent of width x percent of height).
+# A slot with no area can never overlap a vehicle and would read as confidently free (R-07).
+MIN_SLOT_AREA = 1.0
+MAX_SLOT_ID_LENGTH = 40
 HISTORY_COLUMNS = ["timestamp", "slot_id", "status", "confidence", "source", "frame_time_s"]
 # Model states in which frames can be (or are about to be) processed; anything else
 # means no usable model, and only then may the dashboard show demo data.
 USABLE_MODEL_STATES = ("ready", "loading")
 PREPARING_MODEL_STATES = ("ready", "loading", "downloading")
+# Only when no model is installed may the dashboard show demo data. A model that
+# is installed but broken is shown as an error, never as demo data.
+NO_MODEL_STATES = ("missing",)
 
 
 class DetectionError(RuntimeError):
@@ -58,6 +66,9 @@ app = Flask(
     static_folder=str(BASE_DIR / "static"),
     static_url_path="/static",
 )
+# Flask rejects larger request bodies with 413 before they are read (multipart
+# overhead allowed on top of the file itself).
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024 + 1024 * 1024
 state_lock = threading.Lock()  # guards the latest_frame_* globals and history writes
 inference_lock = threading.Lock()  # one inference at a time; the model is shared across threads
 source_lock = threading.Lock()  # guards active_source
@@ -108,24 +119,75 @@ def capture_time(recorded_at: datetime | None, frame_time_s: float | None) -> da
     return recorded_at + timedelta(seconds=frame_time_s or 0.0)
 
 
+class ConfigReadError(OSError):
+    """A config file exists but could not be read or parsed."""
+
+
+# The last content read successfully from each config file, used when a read fails
+# (a OneDrive lock, or a hand edit that left invalid JSON). Keyed by path.
+_last_good_config: dict[Path, Any] = {}
+_config_warnings: set[Path] = set()
+
+
+def write_atomic(path: Path, text: str) -> None:
+    """Replace `path` in one step, so a reader never sees a half-written file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    temporary.write_text(text, encoding="utf-8")
+    for attempt in range(5):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:  # Windows: another process (e.g. OneDrive) has the file open
+            if attempt == 4:
+                temporary.unlink(missing_ok=True)
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
+def read_config(path: Path, expected: type) -> Any:
+    """Parsed JSON from a config file, or None if it does not exist.
+
+    Retries briefly, then raises ConfigReadError. Callers must never write over a
+    file they could not read.
+    """
+    for attempt in range(3):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            time.sleep(0.02 * (attempt + 1))
+            continue
+        if isinstance(data, expected):
+            _config_warnings.discard(path)
+            return data
+        break
+    if path not in _config_warnings:  # log once per bad spell, not on every poll
+        _config_warnings.add(path)
+        app.logger.warning("Could not read %s; using the last good copy and leaving the file untouched.", path)
+    raise ConfigReadError(path)
+
+
 def load_slots() -> list[dict[str, Any]]:
     """Slot polygons from config/slots.json. On first run the file is created from
-    DEFAULT_SLOTS; an unreadable file is left alone and the defaults are used."""
-    if not CONFIG_PATH.exists():
+    DEFAULT_SLOTS. An unreadable file is left alone, and the last good copy (or the
+    defaults) is used."""
+    try:
+        data = read_config(CONFIG_PATH, list)
+    except ConfigReadError:
+        cached = _last_good_config.get(CONFIG_PATH)
+        return [dict(slot) for slot in (cached if cached is not None else DEFAULT_SLOTS)]
+    if data is None:
         save_slots(DEFAULT_SLOTS)
         return [dict(slot) for slot in DEFAULT_SLOTS]
-    try:
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            return data
-    except (OSError, json.JSONDecodeError):
-        pass
-    return [dict(slot) for slot in DEFAULT_SLOTS]
+    _last_good_config[CONFIG_PATH] = data
+    return data
 
 
 def save_slots(slots: list[dict[str, Any]]) -> None:
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(slots, indent=2), encoding="utf-8")
+    write_atomic(CONFIG_PATH, json.dumps(slots, indent=2))
+    _last_good_config[CONFIG_PATH] = slots
 
 
 def unit_interval(value: Any, default: float) -> float:
@@ -145,17 +207,8 @@ def sample_interval(value: Any) -> float:
     return max(low, min(high, number))
 
 
-def load_settings() -> dict[str, Any]:
-    settings: dict[str, Any] = {}
-    if SETTINGS_PATH.exists():
-        try:
-            data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                settings.update(data)
-        except (OSError, json.JSONDecodeError):
-            pass
-
-    normalized = {
+def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    return {
         "lot_name": str(settings.get("lot_name") or DEFAULT_LOT_NAME).strip()[:80],
         "review_threshold": unit_interval(settings.get("review_threshold"), DEFAULT_REVIEW_THRESHOLD),
         "overlap_threshold": unit_interval(settings.get("overlap_threshold"), DEFAULT_OVERLAP_THRESHOLD),
@@ -164,17 +217,32 @@ def load_settings() -> dict[str, Any]:
         # (e.g. "yolo11s.pt"), which is converted here and dropped.
         "model": detectors.normalize_model_id(str(settings.get("model") or settings.get("model_path") or DEFAULT_MODEL)),
     }
-    if settings != normalized:
+
+
+def load_settings() -> dict[str, Any]:
+    """Settings from config/settings.txt, created from the defaults on first run.
+
+    A file that can't be read right now (mid-save, locked, invalid JSON) is never
+    overwritten: the last good settings are used instead.
+    """
+    try:
+        raw = read_config(SETTINGS_PATH, dict)
+    except ConfigReadError:
+        cached = _last_good_config.get(SETTINGS_PATH)
+        return dict(cached) if cached is not None else normalize_settings({})
+    normalized = normalize_settings(raw or {})
+    if raw != normalized:
         # First run, a missing key, or an older format: write the canonical file.
-        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        SETTINGS_PATH.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
-    return normalized
+        write_atomic(SETTINGS_PATH, json.dumps(normalized, indent=2))
+    _last_good_config[SETTINGS_PATH] = normalized
+    return dict(normalized)
 
 
 def save_settings(**updates: Any) -> dict[str, Any]:
     settings = load_settings()
     settings.update(updates)
-    SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    write_atomic(SETTINGS_PATH, json.dumps(settings, indent=2))
+    _last_good_config[SETTINGS_PATH] = dict(settings)
     return settings
 
 
@@ -345,6 +413,10 @@ def classify_frame(frame, slots: list[dict[str, Any]], detections, overlap_thres
     results = []
     for slot in slots:
         hull = cv2.convexHull(slot_polygon_pixels(slot, width, height)).reshape(-1, 2)
+        if cv2.contourArea(hull) < 1.0:
+            # No area: no vehicle can ever overlap it, so it must not read as free (R-07).
+            results.append({"id": slot["id"], "status": "unknown", "confidence": 0.0})
+            continue
         occupied_confidence = 0.0
         vacancy_doubt = 0.0
         for *box, detection_confidence in detections:
@@ -418,15 +490,15 @@ def snapshot(
     if `record` is set, append the reading to the history. `updated_at` is when
     the frame was processed (`processed_at`, default now), so re-classifying an
     old frame after a settings change does not make it look newer (R-06).
-    Without a frame: demo data when no model is loaded, otherwise every slot is
-    "unknown" until a frame is processed. These readings are never recorded.
+    Without a frame: demo data only when no model is installed; while a model
+    downloads or loads, and when it is broken, every slot is "unknown" (the error is
+    in `model_status`). These readings are never recorded.
     """
     slots = load_slots()
     settings = load_settings()
     current_model = model_status()
-    # Demo data only when there is no usable model at all; while one downloads or
-    # loads, slots stay "unknown" instead.
     has_model = current_model["state"] in PREPARING_MODEL_STATES
+    no_model = current_model["state"] in NO_MODEL_STATES
     updated_at: str | None = None
     if frame is not None:
         if detections is None:
@@ -436,9 +508,11 @@ def snapshot(
         updated_at = (processed_at or datetime.now(timezone.utc)).isoformat(timespec="seconds")
     elif has_model:
         results, source, record = waiting_results(slots), "none", False
-    else:
+    elif no_model:
         results, source, record = demo_results(slots), "demo", False
         updated_at = now_iso()
+    else:
+        results, source, record = waiting_results(slots), "model error", False
 
     review_threshold = settings["review_threshold"]
     apply_review_threshold(results, review_threshold)
@@ -459,7 +533,7 @@ def snapshot(
         "source": source,
         "frame_time_s": None if frame_time_s is None else round(frame_time_s, 2),
         "captured_at": captured_at.isoformat(timespec="seconds") if captured_at else None,
-        "model": (latest_frame_model or current_model["name"]) if frame is not None else (current_model["name"] if has_model else "demo classifier"),
+        "model": (latest_frame_model or current_model["name"]) if frame is not None else ("demo classifier" if no_model else current_model["name"]),
         "model_status": current_model,
         "lot_name": settings["lot_name"],
         "review_threshold": review_threshold,
@@ -517,13 +591,23 @@ def store_reading(
 
 
 def frame_handler(source_name: str, recorded_at: datetime | None = None):
-    """Callback for SourceWorker: detect outside state_lock so status polls never wait on inference."""
+    """Callback for SourceWorker: detect outside state_lock so status polls never wait on inference.
+
+    `on_frame.owner` holds the worker it belongs to. A frame that finishes after that
+    worker was stopped or replaced is dropped, so it can't log rows under the old
+    source or replace the new source's reading.
+    """
+    owner: list[SourceWorker] = []
 
     def on_frame(frame, frame_time_s: float | None) -> None:
         detections = detect_vehicles(frame)
         with state_lock:
+            worker = owner[0] if owner else None
+            if worker is None or worker.stopping or active_source is not worker:
+                return
             store_reading(frame, source_name, detections, frame_time_s, capture_time(recorded_at, frame_time_s))
 
+    on_frame.owner = owner  # type: ignore[attr-defined]
     return on_frame
 
 
@@ -540,16 +624,19 @@ def start_source(
     with source_lock:
         if active_source is not None:
             active_source.stop()
-        active_source = SourceWorker(
+        handler = frame_handler(name, recorded_at)
+        worker = SourceWorker(
             kind,
             target,
             name,
             load_settings()["sample_interval_s"],
-            frame_handler(name, recorded_at),
+            handler,
             realtime=realtime,
             cleanup_path=cleanup_path,
-        ).start()
-        return active_source
+        )
+        handler.owner.append(worker)
+        active_source = worker  # before start(), so its first frame is accepted
+        return worker.start()
 
 
 def source_status() -> dict[str, Any] | None:
@@ -570,11 +657,51 @@ def index():
     return render_template("index.html")
 
 
-@app.get("/api/status")
-def status():
+def current_payload() -> dict[str, Any]:
+    """The latest reading (or the no-reading view) with the model's live status.
+
+    The cached reading keeps the model that produced it in `model`, but
+    `model_status` is always fresh, so model switches and errors reach the dashboard.
+    """
     with state_lock:
         payload = latest_frame_snapshot if latest_frame_snapshot is not None else snapshot()
-    return jsonify({**payload, "job": source_status()})
+    return {**payload, "model_status": model_status(), "job": source_status()}
+
+
+@app.errorhandler(413)
+def upload_too_large(error):
+    return jsonify({"error": f"Files must be smaller than {MAX_UPLOAD_MB} MB. For longer recordings, enter the file's path under Live source."}), 413
+
+
+@app.get("/api/status")
+def status():
+    return jsonify(current_payload())
+
+
+def slot_config_problem(slots: list[Any]) -> str | None:
+    """Why a slot list can't be saved, or None if it is valid."""
+    seen: set[str] = set()
+    for index, slot in enumerate(slots, start=1):
+        if not isinstance(slot, dict):
+            return f"Slot {index} must be an object with an id and points."
+        slot_id = slot.get("id")
+        if not isinstance(slot_id, str) or not slot_id.strip() or len(slot_id) > MAX_SLOT_ID_LENGTH:
+            return f"Slot {index} needs a text id of 1 to {MAX_SLOT_ID_LENGTH} characters."
+        if slot_id in seen:
+            return f"Slot id {slot_id} is used twice; each slot needs its own id."
+        seen.add(slot_id)
+        points = slot.get("points")
+        try:
+            if not isinstance(points, list) or len(points) < 3:
+                raise ValueError
+            values = np.array([[float(x), float(y)] for x, y in points], dtype=np.float32)
+        except (TypeError, ValueError):
+            return f"Slot {slot_id} needs at least three [x, y] points."
+        if not np.all((values >= 0) & (values <= 100)):
+            return f"Slot {slot_id} has points outside 0-100."
+        if cv2.contourArea(cv2.convexHull(values)) < MIN_SLOT_AREA:
+            return f"Slot {slot_id} has (almost) no area; its corners can't all lie on one line."
+    return None
 
 
 @app.post("/api/config")
@@ -594,15 +721,9 @@ def config():
         return jsonify({"error": "Review confidence must be a number from 0 to 1."}), 400
     if not 0 <= review_threshold <= 1:
         return jsonify({"error": "Review confidence must be between 0% and 100%."}), 400
-    try:
-        for slot in slots:
-            if not slot.get("id") or len(slot.get("points", [])) < 3:
-                raise ValueError
-            for point in slot["points"]:
-                if len(point) != 2 or not all(0 <= float(value) <= 100 for value in point):
-                    raise ValueError
-    except (AttributeError, TypeError, ValueError):
-        return jsonify({"error": "Each slot needs an id and at least three points between 0 and 100."}), 400
+    problem = slot_config_problem(slots)
+    if problem:
+        return jsonify({"error": problem}), 400
     with state_lock:
         save_slots(slots)
         save_settings(lot_name=lot_name.strip(), review_threshold=review_threshold)
@@ -638,21 +759,21 @@ def is_readable_video(path: str) -> bool:
 @app.post("/api/process")
 def process():
     """Process an uploaded image now, or start a background job that samples an uploaded video."""
-    uploaded = request.files.get("source")
+    uploaded = request.files.get("source")  # larger than MAX_CONTENT_LENGTH: 413 before this
     if uploaded is None or not uploaded.filename:
-        with state_lock:
-            payload = latest_frame_snapshot if latest_frame_snapshot is not None else snapshot()
-        return jsonify({**payload, "job": source_status()})
-    if uploaded.content_length and uploaded.content_length > 100 * 1024 * 1024:
-        return jsonify({"error": "Files must be smaller than 100 MB."}), 413
+        return jsonify(current_payload())
     try:
         recorded_at = parse_recorded_at(request.form.get("recorded_at"))
     except ValueError:
         return jsonify({"error": "Recorded-at must be a date and time, e.g. 2026-11-17T08:30."}), 400
-    raw = uploaded.read()
-    frame = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    # Stream the upload to disk instead of holding it in memory.
+    descriptor, path = tempfile.mkstemp(prefix="slotsight-", suffix=Path(uploaded.filename).suffix or ".bin")
+    with os.fdopen(descriptor, "wb") as file:
+        uploaded.save(file)
+    frame = read_image(path)
     if frame is None:
-        return process_video_upload(uploaded.filename, raw, recorded_at)
+        return process_video_upload(uploaded.filename, path, recorded_at)
+    Path(path).unlink(missing_ok=True)
     try:
         detections = detect_vehicles(frame)
     except DetectionError as error:
@@ -663,11 +784,18 @@ def process():
     return jsonify({**payload, "job": source_status()})
 
 
-def process_video_upload(filename: str, raw: bytes, recorded_at: datetime | None = None):
-    """Save the upload to a temporary file and sample it in the background (R-03)."""
-    descriptor, path = tempfile.mkstemp(prefix="slotsight-", suffix=Path(filename).suffix or ".mp4")
-    with os.fdopen(descriptor, "wb") as file:
-        file.write(raw)
+def read_image(path: str):
+    """Decode `path` as an image, or None if it isn't one (e.g. a video)."""
+    try:
+        if not cv2.haveImageReader(path):
+            return None
+        return cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
+    except cv2.error:
+        return None
+
+
+def process_video_upload(filename: str, path: str, recorded_at: datetime | None = None):
+    """Sample an uploaded video, already saved at `path`, in the background (R-03)."""
     if not is_readable_video(path):
         Path(path).unlink(missing_ok=True)
         return jsonify({"error": "Upload a readable image or video file."}), 400
@@ -745,7 +873,9 @@ def select_model():
     except DetectorError as error:
         return jsonify({"error": str(error)}), 404
     status = models.status(model_id)
-    if status["state"] not in ("ready", "loading", "error"):
+    # "error" here means installed but failed to load: selecting it retries the load.
+    # A failed download stays "missing" and is refused.
+    if status["state"] not in ("ready", "loading", "error") or not detectors.is_installed(spec, MODELS_DIR):
         return jsonify({"error": model_problem(status)}), 409
     try:
         job = None if status["state"] == "ready" else models.start(model_id, download=False, load=True)
@@ -756,15 +886,30 @@ def select_model():
     return jsonify({"job": job, "active": model_id, "message": f"Using {spec.name}. New frames use it; the last reading is unchanged."})
 
 
+def history_rows() -> list[list[str]]:
+    """The history as rows in the current column order, header first. Read-only.
+
+    The file is copied under state_lock (so no append is half-written) and parsed
+    outside it. An older file with fewer columns gets blanks for the new ones.
+    """
+    with state_lock:
+        text = HISTORY_PATH.read_text(encoding="utf-8") if HISTORY_PATH.exists() else ""
+    rows = [HISTORY_COLUMNS]
+    for record in csv.DictReader(io.StringIO(text)):
+        rows.append([record.get(column) or "" for column in HISTORY_COLUMNS])
+    return rows
+
+
 @app.get("/api/history.csv")
 def export_history():
-    ensure_history()
-    return send_file(HISTORY_PATH, as_attachment=True, download_name="slotsight-occupancy-history.csv", mimetype="text/csv")
+    output = io.StringIO()
+    csv.writer(output, lineterminator="\n").writerows(history_rows())
+    data = io.BytesIO(output.getvalue().encode("utf-8"))
+    return send_file(data, as_attachment=True, download_name="slotsight-occupancy-history.csv", mimetype="text/csv")
 
 
 @app.get("/api/history.xlsx")
 def export_excel():
-    ensure_history()
     try:
         from openpyxl import Workbook
     except ImportError:
@@ -772,9 +917,8 @@ def export_excel():
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Occupancy history"
-    with HISTORY_PATH.open(newline="", encoding="utf-8") as file:
-        for row in csv.reader(file):
-            sheet.append(row)
+    for row in history_rows():
+        sheet.append(row)
     output = io.BytesIO()
     workbook.save(output)
     output.seek(0)
@@ -784,7 +928,9 @@ def export_excel():
 if __name__ == "__main__":
     ensure_history()
     load_slots()  # creates config/slots.json and settings.txt on first run
-    debug = True
+    # SLOTSIGHT_DEBUG=1 turns on Flask's debugger and auto-reloader (off by default:
+    # the debugger runs code from the browser, and the reloader restarts on every edit).
+    debug = os.environ.get("SLOTSIGHT_DEBUG", "").strip().lower() in ("1", "true", "yes")
     # With the debug reloader, this block runs in a watcher process and in the serving
     # child; only the child (WERKZEUG_RUN_MAIN) should download or load the model.
     if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":

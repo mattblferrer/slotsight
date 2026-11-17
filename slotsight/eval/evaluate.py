@@ -360,11 +360,14 @@ def sample_note(n: int) -> str:
 
 def render_report(results: dict[str, Any], context: dict[str, Any]) -> str:
     overall, free, occluded, held = results["overall"], results["free_count"], results["occluded"], results["low_confidence"]
+    # Built outside the f-strings below: reusing a quote inside an f-string needs Python 3.12+.
+    note = f" - {context['note']}" if context["note"] else ""
+    mean_error = "--" if free["mean_abs_error"] is None else f"{free['mean_abs_error']:.2f}"
     lines = [
         "",
         f"### Accuracy run: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "",
-        f"- Labels: {context['labels']}{f' - {context['note']}' if context['note'] else ''}",
+        f"- Labels: {context['labels']}{note}",
         f"- {results['frames']} frames, {overall['n']} labeled slot readings, {len(context['slot_ids'])} configured slots",
         f"- Model: {context['model']}; overlap threshold {context['overlap']:g}; review threshold {context['review']:g}",
         "- Scoring: unknown counts as wrong for R-01, R-02 and R-05; R-07 allows correct or unknown on occluded slots",
@@ -382,7 +385,7 @@ def render_report(results: dict[str, Any], context: dict[str, Any]) -> str:
         "",
         f"- Coverage (slots not shown as unknown): {pct(overall['coverage'])}; accuracy on those: {pct(overall['committed_accuracy'])}",
         f"- Occupied slots shown as free (the costly error): {overall['false_free']}",
-        f"- Free count: mean absolute error {'--' if free['mean_abs_error'] is None else f'{free['mean_abs_error']:.2f}'} slots; "
+        f"- Free count: mean absolute error {mean_error} slots; "
         f"over-reported in {free['over_reported']} frames; {free['skipped_frames']} frames skipped (not every slot labeled)",
         f"- Occluded slots: {occluded['correct']} correct, {occluded['unknown']} unknown, {occluded['wrong']} wrong "
         f"({occluded['false_free']} shown free while occupied)",
