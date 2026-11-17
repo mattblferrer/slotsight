@@ -16,6 +16,11 @@
   --occupied-edge: #c9533f;
   --unknown: #f6d879;
   --unknown-edge: #b38a12;
+  /* Charts: contrast against the white panel checked (>= 3:1 for marks). */
+  --chart-line: #3f8a2e; /* free slots: the "available" green, 4.3:1 */
+  --chart-bar: #c9533f; /* occupancy: the "occupied" red edge, 4.4:1 */
+  --chart-peak: #93321f; /* peak hours: a darker step, 7.7:1, plus a text label */
+  --chart-grid: #dce5df;
   --mono: "DM Mono", monospace;
   --sans: "Manrope", sans-serif;
 }
@@ -527,6 +532,195 @@ button {
   color: var(--white);
   font: 10px var(--mono);
   pointer-events: none;
+}
+.trends-panel {
+  position: relative;
+  margin-top: 14px;
+}
+.trend-range {
+  display: inline-flex;
+  border: 1px solid var(--line);
+}
+.trend-range button {
+  border: 0;
+  background: var(--white);
+  color: var(--muted);
+  font: 10px var(--mono);
+  padding: 7px 12px;
+  cursor: pointer;
+}
+.trend-range button[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--white);
+}
+.trend-note {
+  margin: 10px 0 0;
+  font: 10px var(--mono);
+  color: var(--muted);
+}
+.trend-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 24px;
+  margin-top: 16px;
+  transition: opacity 0.2s;
+}
+.trend-grid.is-loading {
+  opacity: 0.45; /* keep the previous render while refetching */
+}
+.trend-chart {
+  margin: 0;
+  min-width: 0;
+}
+.trend-chart figcaption {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 8px;
+}
+.trend-chart figcaption strong {
+  font-size: 13px;
+}
+.trend-chart figcaption span {
+  font: 10px var(--mono);
+  color: var(--muted);
+}
+.chart-box {
+  position: relative;
+  min-height: 200px;
+}
+.chart-box svg {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+.chart-box svg:focus-visible {
+  outline: 2px solid var(--mint-dark);
+  outline-offset: 2px;
+}
+.chart-axis text {
+  font: 9px var(--mono);
+  fill: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.chart-grid line {
+  stroke: var(--chart-grid);
+  stroke-width: 1;
+}
+.chart-line {
+  fill: none;
+  stroke: var(--chart-line);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.chart-area {
+  fill: var(--chart-line);
+  opacity: 0.1;
+}
+.chart-dot {
+  fill: var(--chart-line);
+  stroke: var(--white);
+  stroke-width: 2;
+}
+.chart-label {
+  font: 500 10px var(--mono);
+  fill: var(--ink);
+}
+.chart-crosshair {
+  stroke: var(--muted);
+  stroke-width: 1;
+}
+.chart-bar {
+  fill: var(--chart-bar);
+}
+.chart-bar.is-peak {
+  fill: var(--chart-peak);
+}
+.chart-hit {
+  fill: transparent;
+  cursor: default;
+}
+.chart-hit:hover + .chart-bar,
+.chart-hit:focus + .chart-bar {
+  opacity: 0.75;
+}
+.chart-hit:focus {
+  outline: none;
+}
+.chart-peaks {
+  margin: 6px 0 0;
+  font: 10px var(--mono);
+  color: var(--ink);
+}
+.chart-empty {
+  display: grid;
+  place-items: center;
+  min-height: 200px;
+  border: 1px dashed var(--line);
+  font: 10px var(--mono);
+  color: var(--muted);
+  text-align: center;
+  padding: 0 16px;
+}
+.chart-tooltip {
+  position: absolute;
+  z-index: 8;
+  padding: 8px 10px;
+  background: rgba(23, 43, 37, 0.94);
+  color: var(--white);
+  font: 10px var(--mono);
+  pointer-events: none;
+  white-space: nowrap;
+  display: grid;
+  gap: 3px;
+}
+.chart-tooltip[hidden] {
+  display: none;
+}
+.chart-tooltip strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.trend-table {
+  margin-top: 14px;
+  font: 10px var(--mono);
+  color: var(--muted);
+}
+.trend-table summary {
+  cursor: pointer;
+}
+.trend-table table {
+  border-collapse: collapse;
+  margin: 10px 18px 0 0;
+  display: inline-table;
+  vertical-align: top;
+}
+.trend-table caption {
+  text-align: left;
+  padding-bottom: 6px;
+  color: var(--ink);
+}
+.trend-table th,
+.trend-table td {
+  text-align: right;
+  padding: 3px 10px 3px 0;
+  border-bottom: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+.trend-table th:first-child,
+.trend-table td:first-child {
+  text-align: left;
+}
+.trend-table .table-scroll {
+  max-height: 260px;
+  overflow-y: auto;
+  display: inline-block;
+  vertical-align: top;
+}
+@media (max-width: 800px) {
+  .trend-grid {
+    grid-template-columns: 1fr;
+  }
 }
 .map-footer {
   display: flex;

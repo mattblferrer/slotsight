@@ -31,9 +31,24 @@ function statusOf(item) {
   return STATUSES.includes(item.status) ? item.status : "unknown";
 }
 
-function slotLabel(item) {
-  const time = item.updated_at ? ` / ${timeOnly(item.updated_at)}` : "";
-  return `${item.id} / ${statusOf(item)} / ${Math.round((item.confidence ?? 0) * 100)}% confidence${time}`;
+// How long a slot has had its status, measured to the reading's own time (for
+// recorded footage that is the capture time, not now). "≥" when the status may
+// have begun before monitoring started.
+function statusDuration(item, readingTime) {
+  if (!item.changed_at || !readingTime) return "";
+  const minutes = Math.max(0, Math.floor((new Date(readingTime) - new Date(item.changed_at)) / 60000));
+  const text = minutes >= 60 ? `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m` : `${minutes}m`;
+  return `${item.changed_since_start ? "≥" : ""}${text}`;
+}
+
+function slotLabel(item, readingTime = state.readingTime) {
+  const parts = [item.id, statusOf(item)];
+  const duration = statusDuration(item, readingTime);
+  if (duration) parts.push(`for ${duration}`);
+  if (item.raw_status && item.raw_status !== item.status) parts.push(`latest frame: ${item.raw_status}, confirming`);
+  parts.push(`${Math.round((item.confidence ?? 0) * 100)}% confidence`);
+  if (item.updated_at) parts.push(timeOnly(item.updated_at));
+  return parts.join(" / ");
 }
 
 // R-06: every slot is filled in its status colour, carries a pinned ID chip,
@@ -233,6 +248,7 @@ async function saveVisualConfig() {
 }
 
 function renderActivity(data) {
+  const readingTime = data.captured_at || data.updated_at;
   const rows = (data.slots || []).map((item) => {
     const status = statusOf(item);
     const row = document.createElement("div");
@@ -243,7 +259,8 @@ function renderActivity(data) {
     name.append(dot, item.id);
     const label = document.createElement("span");
     label.className = "activity-status";
-    label.textContent = status;
+    const duration = statusDuration(item, readingTime);
+    label.textContent = duration ? `${status} · ${duration}` : status;
     const time = document.createElement("span");
     time.className = "activity-time";
     time.textContent = timeOnly(item.updated_at ?? data.updated_at);
@@ -282,7 +299,27 @@ function renderModelAlert(data) {
   alert.classList.toggle("is-error", Boolean(status) && status.state !== "missing");
 }
 
+// Camera-shift check: a warning when the camera seems to have moved, otherwise a
+// quiet note in the map footer.
+function renderCamera(data) {
+  const camera = data.camera || {};
+  const alert = $("cameraAlert");
+  const moved = camera.state === "moved";
+  alert.hidden = !moved;
+  alert.textContent = moved
+    ? `The camera may have moved: slots look about ${camera.shift_pct ?? "?"}% of the frame width out of place (${camera.streak} checks in a row). Check the layout with Edit layout; saving it makes the current frame the new reference.`
+    : "";
+  const notes = {
+    ok: `Camera check OK${camera.shift_pct != null ? ` (${camera.shift_pct}% shift)` : ""}`,
+    suspect: `Camera check: possible shift of ${camera.shift_pct}% (${camera.streak} of 3 checks)`,
+    unverified: `Camera check: can't verify (${camera.reason || "too few features"})`,
+  };
+  const note = notes[camera.state];
+  $("mapFootnote").textContent = `Polygon view / ${state.slots.length} slots${note ? ` / ${note}` : ""}`;
+}
+
 function render(data) {
+  state.readingTime = data.captured_at || data.updated_at;
   const occupied = (data.slots || []).filter(
     (item) => item.status === "occupied",
   ).length;
@@ -302,6 +339,7 @@ function render(data) {
   renderMap(data);
   renderMapStamp(data);
   renderActivity(data);
+  renderCamera(data);
   if ("job" in data) renderJob(data.job);
   if (data.preview_image) {
     const preview = $("framePreview");
@@ -716,5 +754,310 @@ $("saveConfig").addEventListener("click", async (event) => {
   }
 });
 
+// --- Trends: free slots over time and busiest hours (plain SVG) ---
+const TREND_REFRESH_MS = 60000;
+const trendState = { range: "24h", data: null, timer: null };
+
+function svgEl(name, attributes = {}, parent = null) {
+  const element = document.createElementNS(SVG_NS, name);
+  for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
+  if (parent) parent.appendChild(element);
+  return element;
+}
+
+function trendTimeLabel(iso, range) {
+  const date = new Date(iso);
+  return range === "7d"
+    ? date.toLocaleDateString([], { weekday: "short", day: "numeric" })
+    : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function hourLabel(hour) {
+  return `${String(hour).padStart(2, "0")}:00`;
+}
+
+function showChartTooltip(lines, x, y) {
+  const tooltip = $("chartTooltip");
+  const panel = tooltip.parentElement.getBoundingClientRect();
+  tooltip.replaceChildren(
+    ...lines.map((line, index) => {
+      const element = document.createElement(index === 0 ? "strong" : "span");
+      element.textContent = line;
+      return element;
+    }),
+  );
+  tooltip.hidden = false;
+  const left = Math.min(panel.width - tooltip.offsetWidth - 8, Math.max(8, x - panel.left + 14));
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${Math.max(8, y - panel.top - tooltip.offsetHeight - 10)}px`;
+}
+
+function hideChartTooltip() {
+  $("chartTooltip").hidden = true;
+}
+
+function emptyChart(box, text) {
+  const empty = document.createElement("div");
+  empty.className = "chart-empty";
+  empty.textContent = text;
+  box.replaceChildren(empty);
+}
+
+// Line + 10% area wash, one series: no legend (the caption names it). A crosshair
+// snaps to the nearest interval; arrow keys move it when the chart has focus.
+function renderFreeChart(data) {
+  const box = $("freeChart");
+  const points = data.series.map((point, index) => ({ ...point, index })).filter((point) => point.free != null);
+  if (!points.length) {
+    emptyChart(box, "No readings in this range yet. Process a video or start a live source.");
+    return;
+  }
+  const width = Math.max(260, box.clientWidth);
+  const height = 200;
+  const margin = { top: 12, right: 44, bottom: 22, left: 30 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  // The axis ends at the number of slots: "free" can't exceed it.
+  const yMax = Math.max(1, ...points.map((point) => point.total || point.free));
+  const x = (index) => margin.left + (index / Math.max(1, data.series.length - 1)) * plotWidth;
+  const y = (value) => margin.top + plotHeight - (value / yMax) * plotHeight;
+
+  const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, height, role: "img", tabindex: "0" });
+  const latest = points[points.length - 1];
+  svg.setAttribute(
+    "aria-label",
+    `Free slots over the ${data.range === "7d" ? "last 7 days" : "last 24 hours"} of readings; latest ${latest.free} of ${latest.total}. Use the arrow keys to read each interval, or open the table below.`,
+  );
+  const grid = svgEl("g", { class: "chart-grid" }, svg);
+  const axis = svgEl("g", { class: "chart-axis" }, svg);
+  const ticks = yMax <= 4 ? Array.from({ length: yMax + 1 }, (_, i) => i) : [0, Math.round(yMax / 2), yMax];
+  for (const tick of ticks) {
+    svgEl("line", { x1: margin.left, x2: margin.left + plotWidth, y1: y(tick), y2: y(tick) }, grid);
+    svgEl("text", { x: margin.left - 6, y: y(tick) + 3, "text-anchor": "end" }, axis).textContent = Math.round(tick);
+  }
+  const labelCount = Math.min(5, data.series.length);
+  for (let i = 0; i < labelCount; i += 1) {
+    const index = Math.round((i / Math.max(1, labelCount - 1)) * (data.series.length - 1));
+    const anchor = i === 0 ? "start" : i === labelCount - 1 ? "end" : "middle";
+    svgEl("text", { x: x(index), y: height - 6, "text-anchor": anchor }, axis).textContent = trendTimeLabel(data.series[index].t, data.range);
+  }
+
+  // Join readings across short gaps (sparse sampling); break the line only where
+  // more than MAX_GAP intervals in a row have no readings (an outage).
+  const MAX_GAP = 3;
+  const runs = [];
+  let run = [];
+  points.forEach((point) => {
+    const previous = run[run.length - 1];
+    if (previous && point.index - previous.index > MAX_GAP + 1) {
+      runs.push(run);
+      run = [];
+    }
+    run.push(point);
+  });
+  if (run.length) runs.push(run);
+  for (const segment of runs) {
+    const line = segment.map((point, i) => `${i ? "L" : "M"}${x(point.index).toFixed(1)},${y(point.free).toFixed(1)}`).join("");
+    if (segment.length > 1) {
+      const area = `${line}L${x(segment[segment.length - 1].index).toFixed(1)},${y(0)}L${x(segment[0].index).toFixed(1)},${y(0)}Z`;
+      svgEl("path", { d: area, class: "chart-area" }, svg);
+    }
+    svgEl("path", { d: line, class: "chart-line" }, svg);
+    if (segment.length === 1) svgEl("circle", { cx: x(segment[0].index), cy: y(segment[0].free), r: 3, class: "chart-dot" }, svg);
+  }
+  // Direct label at the end: the latest value only.
+  svgEl("circle", { cx: x(latest.index), cy: y(latest.free), r: 4, class: "chart-dot" }, svg);
+  svgEl("text", { x: x(latest.index) + 8, y: y(latest.free) + 3, class: "chart-label" }, svg).textContent = `${Math.round(latest.free)} free`;
+
+  const crosshair = svgEl("line", { y1: margin.top, y2: margin.top + plotHeight, class: "chart-crosshair", visibility: "hidden" }, svg);
+  const marker = svgEl("circle", { r: 4, class: "chart-dot", visibility: "hidden" }, svg);
+  let current = points.length - 1;
+  const show = (position, clientX, clientY) => {
+    const point = points[position];
+    current = position;
+    crosshair.setAttribute("x1", x(point.index));
+    crosshair.setAttribute("x2", x(point.index));
+    crosshair.setAttribute("visibility", "visible");
+    marker.setAttribute("cx", x(point.index));
+    marker.setAttribute("cy", y(point.free));
+    marker.setAttribute("visibility", "visible");
+    const bounds = svg.getBoundingClientRect();
+    const scale = bounds.width / width;
+    showChartTooltip(
+      [
+        `${point.free} free of ${point.total}`,
+        `${trendTimeLabel(point.t, "7d")} ${trendTimeLabel(point.t, "24h")}`,
+        `lowest ${point.free_min} / unknown ${point.unknown} / ${point.frames} frames`,
+      ],
+      clientX ?? bounds.left + x(point.index) * scale,
+      clientY ?? bounds.top + y(point.free) * scale,
+    );
+  };
+  const hide = () => {
+    crosshair.setAttribute("visibility", "hidden");
+    marker.setAttribute("visibility", "hidden");
+    hideChartTooltip();
+  };
+  const hit = svgEl("rect", { x: margin.left, y: margin.top, width: plotWidth, height: plotHeight, class: "chart-hit" }, svg);
+  hit.addEventListener("pointermove", (event) => {
+    const bounds = svg.getBoundingClientRect();
+    const svgX = ((event.clientX - bounds.left) / bounds.width) * width;
+    let best = 0;
+    points.forEach((point, position) => {
+      if (Math.abs(x(point.index) - svgX) < Math.abs(x(points[best].index) - svgX)) best = position;
+    });
+    show(best, event.clientX, event.clientY);
+  });
+  hit.addEventListener("pointerleave", hide);
+  svg.addEventListener("focus", () => show(current));
+  svg.addEventListener("blur", hide);
+  svg.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      show(Math.min(points.length - 1, Math.max(0, current + (event.key === "ArrowRight" ? 1 : -1))));
+    }
+  });
+  box.replaceChildren(svg);
+}
+
+function roundedTopBar(x, y, width, height) {
+  const r = Math.min(4, height, width / 2);
+  return `M${x},${y + height}V${y + r}Q${x},${y} ${x + r},${y}H${x + width - r}Q${x + width},${y} ${x + width},${y + r}V${y + height}Z`;
+}
+
+// 24 columns from one baseline, <= 24px thick with a 4px rounded top. Peak hours
+// are a darker step and carry their value and a "Peak" label (never colour alone).
+function renderHourChart(data) {
+  const box = $("hourChart");
+  if (!data.hours.some((hour) => hour.occupancy != null)) {
+    emptyChart(box, "Busy hours appear once there are readings.");
+    return;
+  }
+  const width = Math.max(260, box.clientWidth);
+  const height = 200;
+  const margin = { top: 26, right: 4, bottom: 22, left: 34 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const band = plotWidth / 24;
+  const barWidth = Math.min(24, Math.max(3, band - 2)); // >= 2px surface gap between columns
+  const y = (value) => margin.top + plotHeight - value * plotHeight;
+  const peaks = new Set(data.peak_hours);
+  const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, height, role: "group" });
+  svg.setAttribute("aria-label", `Average occupancy by hour of day. Peak hours: ${data.peak_hours.map(hourLabel).join(", ") || "none yet"}.`);
+  const grid = svgEl("g", { class: "chart-grid" }, svg);
+  const axis = svgEl("g", { class: "chart-axis" }, svg);
+  for (const tick of [0, 0.5, 1]) {
+    svgEl("line", { x1: margin.left, x2: margin.left + plotWidth, y1: y(tick), y2: y(tick) }, grid);
+    svgEl("text", { x: margin.left - 6, y: y(tick) + 3, "text-anchor": "end" }, axis).textContent = `${tick * 100}%`;
+  }
+  data.hours.forEach((hour) => {
+    const center = margin.left + band * (hour.hour + 0.5);
+    if (hour.hour % 3 === 0) svgEl("text", { x: center, y: height - 6, "text-anchor": "middle" }, axis).textContent = String(hour.hour).padStart(2, "0");
+    if (hour.occupancy == null) return;
+    const top = y(hour.occupancy);
+    const barHeight = Math.max(1, y(0) - top);
+    const group = svgEl("g", {}, svg);
+    // The hit target is the whole column, bigger than the bar.
+    const hit = svgEl("rect", { x: center - band / 2, y: margin.top, width: band, height: plotHeight, class: "chart-hit", tabindex: "0" }, group);
+    const label = `${hourLabel(hour.hour)}-${hourLabel((hour.hour + 1) % 24)}: ${Math.round(hour.occupancy * 100)}% occupied${peaks.has(hour.hour) ? " (peak)" : ""}, ${hour.frames} frames`;
+    hit.setAttribute("aria-label", label);
+    svgEl("path", { d: roundedTopBar(center - barWidth / 2, top, barWidth, barHeight), class: `chart-bar${peaks.has(hour.hour) ? " is-peak" : ""}` }, group);
+    if (hour.hour === data.peak_hours[0]) {
+      // Only the busiest hour carries a value; the others are listed below the chart.
+      svgEl("text", { x: center, y: top - 5, "text-anchor": "middle", class: "chart-label" }, group).textContent = `${Math.round(hour.occupancy * 100)}%`;
+    }
+    const lines = [`${Math.round(hour.occupancy * 100)}% occupied`, `${hourLabel(hour.hour)}-${hourLabel((hour.hour + 1) % 24)}${peaks.has(hour.hour) ? " / peak" : ""}`, `${hour.frames} frames`];
+    hit.addEventListener("pointermove", (event) => showChartTooltip(lines, event.clientX, event.clientY));
+    hit.addEventListener("pointerleave", hideChartTooltip);
+    hit.addEventListener("focus", () => {
+      const bounds = hit.getBoundingClientRect();
+      showChartTooltip(lines, bounds.left + bounds.width / 2, bounds.top + 20);
+    });
+    hit.addEventListener("blur", hideChartTooltip);
+  });
+  const peakNote = document.createElement("p");
+  peakNote.className = "chart-peaks";
+  peakNote.textContent = data.peak_hours.length
+    ? `Peak hours (darker): ${[...data.peak_hours].sort((a, b) => a - b).map((hour) => `${hourLabel(hour)}-${hourLabel((hour + 1) % 24)}`).join(", ")}`
+    : "";
+  box.replaceChildren(svg, peakNote);
+}
+
+function tableOf(caption, headings, rows) {
+  const table = document.createElement("table");
+  table.createCaption().textContent = caption;
+  const head = table.createTHead().insertRow();
+  for (const heading of headings) {
+    const cell = document.createElement("th");
+    cell.scope = "col";
+    cell.textContent = heading;
+    head.appendChild(cell);
+  }
+  const body = table.createTBody();
+  for (const values of rows) {
+    const row = body.insertRow();
+    for (const value of values) row.insertCell().textContent = value;
+  }
+  const scroll = document.createElement("div");
+  scroll.className = "table-scroll";
+  scroll.appendChild(table);
+  return scroll;
+}
+
+function renderTrendTable(data) {
+  const series = data.series
+    .filter((point) => point.free != null)
+    .map((point) => [`${trendTimeLabel(point.t, "7d")} ${trendTimeLabel(point.t, "24h")}`, point.free, point.free_min, point.unknown, point.frames]);
+  const hours = data.hours
+    .filter((hour) => hour.occupancy != null)
+    .map((hour) => [hourLabel(hour.hour), `${Math.round(hour.occupancy * 100)}%`, data.peak_hours.includes(hour.hour) ? "peak" : "", hour.frames]);
+  $("trendTable").replaceChildren(
+    tableOf("Free slots per interval", ["Interval", "Free (avg)", "Lowest", "Unknown", "Frames"], series),
+    tableOf("Occupancy by hour", ["Hour", "Occupied", "", "Frames"], hours),
+  );
+}
+
+function renderTrends(data) {
+  trendState.data = data;
+  const span = data.range === "7d" ? "7 days" : "24 hours";
+  $("trendNote").textContent = data.end
+    ? `${data.frames} frames over the ${span} up to the latest reading (${new Date(data.end).toLocaleString()}). Statuses are the smoothed ones shown on the dashboard.`
+    : "No readings yet.";
+  renderFreeChart(data);
+  renderHourChart(data);
+  renderTrendTable(data);
+}
+
+async function loadTrends() {
+  clearTimeout(trendState.timer);
+  const grid = $("trendGrid");
+  grid.classList.add("is-loading");
+  try {
+    const response = await fetch(`/api/trends?range=${encodeURIComponent(trendState.range)}`, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not load trends.");
+    renderTrends(data);
+  } catch (error) {
+    $("trendNote").textContent = error.message;
+  } finally {
+    grid.classList.remove("is-loading");
+    trendState.timer = setTimeout(loadTrends, TREND_REFRESH_MS);
+  }
+}
+
+document.querySelectorAll(".trend-range button").forEach((button) => {
+  button.addEventListener("click", () => {
+    trendState.range = button.dataset.range;
+    document.querySelectorAll(".trend-range button").forEach((other) => other.setAttribute("aria-pressed", String(other === button)));
+    loadTrends();
+  });
+});
+let trendResizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(trendResizeTimer);
+  trendResizeTimer = setTimeout(() => trendState.data && renderTrends(trendState.data), 150);
+});
+
 refresh();
 setTimer();
+loadTrends();

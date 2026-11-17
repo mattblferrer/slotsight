@@ -18,7 +18,10 @@ from flask import Flask, jsonify, render_template, request, send_file
 
 import detectors
 from detectors import DETECTION_CONFIDENCE_FLOOR, DetectorError, ModelManager  # noqa: F401 (re-exported for scripts)
+from camera import CameraMonitor
 from sources import SourceWorker, parse_target
+from tracking import SlotTracker, unsmoothed
+import trends
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = BASE_DIR / "config"  # files you edit: slot polygons and settings (gitignored, created on first run)
@@ -27,6 +30,7 @@ MODELS_DIR = BASE_DIR / "models"  # downloaded detection models (gitignored)
 CONFIG_PATH = CONFIG_DIR / "slots.json"
 SETTINGS_PATH = CONFIG_DIR / "settings.txt"
 HISTORY_PATH = DATA_DIR / "occupancy_history.csv"
+REFERENCE_PATH = CONFIG_DIR / "reference_frame.jpg"  # camera-shift reference (gitignored)
 DEFAULT_LOT_NAME = "Lot 01"
 DEFAULT_REVIEW_THRESHOLD = 0.7
 DEFAULT_OVERLAP_THRESHOLD = 0.4
@@ -40,7 +44,9 @@ MAX_UPLOAD_MB = 100  # images and videos uploaded from the dashboard
 # A slot with no area can never overlap a vehicle and would read as confidently free (R-07).
 MIN_SLOT_AREA = 1.0
 MAX_SLOT_ID_LENGTH = 40
-HISTORY_COLUMNS = ["timestamp", "slot_id", "status", "confidence", "source", "frame_time_s"]
+# `status` is what the dashboard showed (smoothed for videos and live sources);
+# `raw_status` is the single-frame result. Older files are upgraded in place.
+HISTORY_COLUMNS = ["timestamp", "slot_id", "status", "confidence", "source", "frame_time_s", "raw_status"]
 # Model states in which frames can be (or are about to be) processed; anything else
 # means no usable model, and only then may the dashboard show demo data.
 USABLE_MODEL_STATES = ("ready", "loading")
@@ -76,6 +82,10 @@ active_source: SourceWorker | None = None
 # Installs and loads detection models. Its status calls never block; loading happens
 # on a background thread or in detect_vehicles, never while state_lock is held.
 models = ModelManager(MODELS_DIR)
+# Smooths slot statuses across the frames of one sequential source (videos, streams).
+tracker = SlotTracker()
+# Warns when the camera seems to have moved away from the reference frame.
+camera = CameraMonitor(REFERENCE_PATH)
 latest_frame_snapshot: dict[str, Any] | None = None
 latest_frame = None
 latest_frame_detections = None
@@ -282,7 +292,9 @@ def append_history(
         timestamp = captured_at.isoformat(timespec="seconds") if captured_at else now_iso()
         offset = "" if frame_time_s is None else f"{frame_time_s:.2f}"
         for result in results:
-            writer.writerow([timestamp, result["id"], result["status"], result["confidence"], source, offset])
+            writer.writerow(
+                [timestamp, result["id"], result["status"], result["confidence"], source, offset, result.get("raw_status", result["status"])]
+            )
 
 
 def model_overridden() -> bool:
@@ -457,17 +469,72 @@ def waiting_results(slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"id": slot["id"], "status": "unknown", "confidence": 0.0} for slot in slots]
 
 
-def annotate_frame(frame, slots: list[dict[str, Any]], results: list[dict[str, Any]], detections) -> str:
+BOX_COLOR = (235, 170, 40)  # BGR blue: distinct from the green/red/yellow slot colours
+
+
+def detection_counts(box, slot_hulls: list[np.ndarray], overlap_threshold: float) -> bool:
+    """Whether a detection overlaps any slot enough to mark it occupied."""
+    return any(overlap_ratio(box, hull) >= overlap_threshold for hull in slot_hulls)
+
+
+def draw_dashed_rectangle(canvas, top_left, bottom_right, color, thickness: int, dash: int) -> None:
+    (x1, y1), (x2, y2) = top_left, bottom_right
+    for start, end in (((x1, y1), (x2, y1)), ((x2, y1), (x2, y2)), ((x2, y2), (x1, y2)), ((x1, y2), (x1, y1))):
+        length = int(np.hypot(end[0] - start[0], end[1] - start[1]))
+        for offset in range(0, length, dash * 2):
+            a = offset / max(length, 1)
+            b = min(offset + dash, length) / max(length, 1)
+            p1 = (int(start[0] + (end[0] - start[0]) * a), int(start[1] + (end[1] - start[1]) * a))
+            p2 = (int(start[0] + (end[0] - start[0]) * b), int(start[1] + (end[1] - start[1]) * b))
+            cv2.line(canvas, p1, p2, color, thickness, cv2.LINE_AA)
+
+
+def draw_detections(canvas, detections, slot_hulls, overlap_threshold: float, review_threshold: float) -> None:
+    """Draw every vehicle detection with its confidence.
+
+    Solid: it overlaps a slot enough, with enough confidence, to mark it occupied.
+    Dashed: weak (below the review threshold) or only partly in a slot. These are
+    the detections that push slots to "unknown" rather than occupied (R-07).
+    """
+    height, width = canvas.shape[:2]
+    thickness = max(2, width // 600)
+    scale = max(0.45, width / 1600)
+    for *box, confidence in detections:
+        x1, y1, x2, y2 = (int(round(value)) for value in box)
+        strong = confidence >= review_threshold and detection_counts(box, slot_hulls, overlap_threshold)
+        if strong:
+            cv2.rectangle(canvas, (x1, y1), (x2, y2), BOX_COLOR, thickness, cv2.LINE_AA)
+        else:
+            draw_dashed_rectangle(canvas, (x1, y1), (x2, y2), BOX_COLOR, thickness, dash=max(6, width // 120))
+        label = f"{confidence * 100:.0f}%"
+        (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
+        top = max(0, y1 - text_height - baseline - 4)
+        cv2.rectangle(canvas, (x1, top), (x1 + text_width + 6, top + text_height + baseline + 4), BOX_COLOR, -1)
+        cv2.putText(canvas, label, (x1 + 3, top + text_height + 2), cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), 1, cv2.LINE_AA)
+
+
+def annotate_frame(
+    frame,
+    slots: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+    detections,
+    overlap_threshold: float = DEFAULT_OVERLAP_THRESHOLD,
+    review_threshold: float = DEFAULT_REVIEW_THRESHOLD,
+) -> str:
+    """The preview image: slots filled and outlined by status, plus every vehicle detection."""
     canvas = frame.copy()
     height, width = canvas.shape[:2]
     overlay = canvas.copy()
     colors = {"unknown": (121, 216, 246), "occupied": (125, 142, 240), "vacant": (99, 187, 121)}
-    polygons = [slot_polygon_pixels(slot, width, height).astype(np.int32) for slot in slots]
+    pixel_polygons = [slot_polygon_pixels(slot, width, height) for slot in slots]
+    polygons = [points.astype(np.int32) for points in pixel_polygons]
     for points, result in zip(polygons, results):
         cv2.fillPoly(overlay, [points], colors[result["status"]])
     canvas = cv2.addWeighted(overlay, 0.12, canvas, 0.88, 0)
     for points, result in zip(polygons, results):
         cv2.polylines(canvas, [points], True, colors[result["status"]], max(2, width // 500))
+    hulls = [cv2.convexHull(points).reshape(-1, 2) for points in pixel_polygons]
+    draw_detections(canvas, detections or [], hulls, overlap_threshold, review_threshold)
 
     encoded, buffer = cv2.imencode(".jpg", canvas, [cv2.IMWRITE_JPEG_QUALITY, 88])
     if not encoded:
@@ -483,8 +550,13 @@ def snapshot(
     frame_time_s: float | None = None,
     captured_at: datetime | None = None,
     processed_at: datetime | None = None,
+    smooth: bool = False,
 ) -> dict[str, Any]:
     """Build the dashboard payload.
+
+    `smooth` feeds this frame to the slot tracker (one new frame of a video or live
+    source): statuses are smoothed and carry the time they began. Otherwise a frame's
+    statuses are shown as read (a single image, or re-classifying the last frame).
 
     With a frame: classify it from `detections` (detected here if not given) and,
     if `record` is set, append the reading to the history. `updated_at` is when
@@ -516,6 +588,11 @@ def snapshot(
 
     review_threshold = settings["review_threshold"]
     apply_review_threshold(results, review_threshold)
+    if frame is not None:
+        if smooth:
+            results = tracker.update(results, captured_at or processed_at or datetime.now(timezone.utc))
+        else:
+            results = unsmoothed(results)
     if record:
         append_history(results, source, frame_time_s, captured_at)
     occupied = sum(result["status"] == "occupied" for result in results)
@@ -540,7 +617,9 @@ def snapshot(
         "overlap_threshold": settings["overlap_threshold"],
     }
     if frame is not None:
-        response["preview_image"] = annotate_frame(frame, slots, results, detections)
+        response["preview_image"] = annotate_frame(
+            frame, slots, results, detections, settings["overlap_threshold"], review_threshold
+        )
     return response
 
 
@@ -567,8 +646,12 @@ def store_reading(
     detections,
     frame_time_s: float | None = None,
     captured_at: datetime | None = None,
+    smooth: bool = False,
 ) -> dict[str, Any]:
-    """Make `frame` the latest reading and append it to the history. Caller holds state_lock."""
+    """Make `frame` the latest reading and append it to the history. Caller holds state_lock.
+
+    `smooth` is set for frames of a video or live source; a single image resets the tracker.
+    """
     global latest_frame_snapshot, latest_frame, latest_frame_detections, latest_frame_source
     global latest_frame_time_s, latest_frame_captured_at, latest_frame_processed_at, latest_frame_model
     latest_frame = frame
@@ -578,6 +661,8 @@ def store_reading(
     latest_frame_time_s = frame_time_s
     latest_frame_captured_at = captured_at
     latest_frame_processed_at = datetime.now(timezone.utc)
+    if not smooth:
+        tracker.reset()  # a single image breaks any sequence
     latest_frame_snapshot = snapshot(
         frame,
         source,
@@ -586,6 +671,7 @@ def store_reading(
         frame_time_s=frame_time_s,
         captured_at=captured_at,
         processed_at=latest_frame_processed_at,
+        smooth=smooth,
     )
     return latest_frame_snapshot
 
@@ -601,11 +687,12 @@ def frame_handler(source_name: str, recorded_at: datetime | None = None):
 
     def on_frame(frame, frame_time_s: float | None) -> None:
         detections = detect_vehicles(frame)
+        camera.observe(frame, load_slots())  # every Nth frame; outside state_lock
         with state_lock:
             worker = owner[0] if owner else None
             if worker is None or worker.stopping or active_source is not worker:
                 return
-            store_reading(frame, source_name, detections, frame_time_s, capture_time(recorded_at, frame_time_s))
+            store_reading(frame, source_name, detections, frame_time_s, capture_time(recorded_at, frame_time_s), smooth=True)
 
     on_frame.owner = owner  # type: ignore[attr-defined]
     return on_frame
@@ -624,6 +711,7 @@ def start_source(
     with source_lock:
         if active_source is not None:
             active_source.stop()
+        tracker.reset()  # a new source starts a new sequence
         handler = frame_handler(name, recorded_at)
         worker = SourceWorker(
             kind,
@@ -665,7 +753,7 @@ def current_payload() -> dict[str, Any]:
     """
     with state_lock:
         payload = latest_frame_snapshot if latest_frame_snapshot is not None else snapshot()
-    return {**payload, "model_status": model_status(), "job": source_status()}
+    return {**payload, "model_status": model_status(), "camera": camera.status(), "job": source_status()}
 
 
 @app.errorhandler(413)
@@ -725,10 +813,18 @@ def config():
     if problem:
         return jsonify({"error": problem}), 400
     with state_lock:
+        layout_changed = slots != load_slots()
         save_slots(slots)
         save_settings(lot_name=lot_name.strip(), review_threshold=review_threshold)
         reclassify_latest_frame()
-        return jsonify({"slots": slots, "lot_name": lot_name.strip(), "review_threshold": review_threshold, "message": "Lot configuration saved."})
+        frame = latest_frame
+    message = "Lot configuration saved."
+    if layout_changed and frame is not None:
+        # The layout was drawn on this frame: it becomes the camera-shift reference.
+        # Only when the slots changed, so renaming the lot can't hide a "moved" warning.
+        camera.set_reference(frame)
+        message += " The current frame is now the camera reference."
+    return jsonify({"slots": slots, "lot_name": lot_name.strip(), "review_threshold": review_threshold, "message": message})
 
 
 @app.post("/api/review-threshold")
@@ -898,6 +994,26 @@ def history_rows() -> list[list[str]]:
     for record in csv.DictReader(io.StringIO(text)):
         rows.append([record.get(column) or "" for column in HISTORY_COLUMNS])
     return rows
+
+
+_trends_cache: dict[tuple, dict[str, Any]] = {}
+
+
+@app.get("/api/trends")
+def get_trends():
+    """Free slots over time (24h or 7d, ending at the latest reading) and busy hours of day."""
+    range_key = request.args.get("range", "24h")
+    if range_key not in trends.RANGES:
+        return jsonify({"error": f"range must be one of {', '.join(trends.RANGES)}"}), 400
+    try:
+        stat = HISTORY_PATH.stat()
+        key = (str(HISTORY_PATH), stat.st_size, stat.st_mtime_ns, range_key)
+    except FileNotFoundError:
+        key = (str(HISTORY_PATH), 0, 0, range_key)
+    if key not in _trends_cache:  # re-aggregate only when the history changed
+        _trends_cache.clear()
+        _trends_cache[key] = trends.summarize(history_rows(), range_key)
+    return jsonify(_trends_cache[key])
 
 
 @app.get("/api/history.csv")

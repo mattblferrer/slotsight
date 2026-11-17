@@ -179,7 +179,7 @@ def test_exports_read_an_older_file_without_changing_it(client, app):
     app.HISTORY_PATH.write_text("timestamp,slot_id,status,confidence,source\n2026-01-01T00:00:00+00:00,A01,vacant,0.9,x.png\n", encoding="utf-8")
     before = app.HISTORY_PATH.read_bytes()
     text = client.get("/api/history.csv").get_data(as_text=True)
-    assert text.splitlines() == [",".join(app.HISTORY_COLUMNS), "2026-01-01T00:00:00+00:00,A01,vacant,0.9,x.png,"]
+    assert text.splitlines() == [",".join(app.HISTORY_COLUMNS), "2026-01-01T00:00:00+00:00,A01,vacant,0.9,x.png,,"]
     assert app.HISTORY_PATH.read_bytes() == before
 
 

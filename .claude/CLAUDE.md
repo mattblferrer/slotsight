@@ -29,12 +29,15 @@ Only `README.md`, `.gitignore` and this `.claude/` folder sit at the top level. 
 
 - `slotsight/app.py`: the backend (Flask routes, settings and slot persistence, classification, annotation, history and export). `BASE_DIR` is `slotsight/`. `CONFIG_DIR`, `DATA_DIR` and `MODELS_DIR` are its `config/`, `data/` and `models/` subfolders. `models` is the `ModelManager`; `detect_vehicles` loads the configured model through it.
 - `slotsight/detectors.py`: the model registry (`MODELS`, ids like `ultralytics/yolo11s`, `huggingface/rtdetr-v2-r18`, `rfdetr/nano`, `opencv/yolox-s`, plus `ultralytics/file:<name>.pt`), hash-checked downloads, one adapter per provider (each returns vehicle boxes only, by COCO class name), and `ModelManager` (one loaded model, background install/load jobs, non-blocking `status()`). Provider packages are imported lazily.
+- `slotsight/tracking.py`: `SlotTracker`, safe-side smoothing over consecutive frames (to vacant after 3 agreeing frames, to occupied after 2, to unknown at once) and when each status began. Only sequential sources (`smooth=True` in `store_reading`) are smoothed; a single image or a re-classification is shown as read and an image resets the tracker.
+- `slotsight/camera.py`: `CameraMonitor`, an ORB + RANSAC comparison against `config/reference_frame.jpg` every 10th frame of a sequential source. "moved" after 3 checks over 2 % of the frame width; warns only. The reference is set on a layout save that changes the slots (or from the first frame of a sequential source).
+- `slotsight/trends.py`: pure aggregation of `history_rows()` into free slots per interval (24h/7d, ending at the latest reading) and occupancy by local hour of day.
 - `slotsight/sources.py`: `SourceWorker`, which reads video files, streams and cameras on a background thread and samples one frame per `sample_interval_s`
 - `slotsight/static/app.js`: dashboard logic (2 s polling, map rendering, slot polygon editor, config dialog, uploads, live-source controls, job progress)
 - `slotsight/static/style.css`, `slotsight/templates/index.html`: the UI
 - `slotsight/config/slots.json`: slot polygons, with coordinates **normalised 0–100** relative to frame width and height. Gitignored; created from `DEFAULT_SLOTS` on first run.
 - `slotsight/config/settings.txt`: JSON despite the extension (`lot_name`, `review_threshold`, `overlap_threshold`, `sample_interval_s`, `model`). Gitignored; created from the `app.py` defaults on first run. A legacy `model_path` is migrated to `model` automatically.
-- `slotsight/data/occupancy_history.csv`: append-only log (`timestamp, slot_id, status, confidence, source, frame_time_s`). Gitignored, like the archived `occupancy_history-*.csv` files.
+- `slotsight/data/occupancy_history.csv`: append-only log (`timestamp, slot_id, status, confidence, source, frame_time_s, raw_status`; `status` is smoothed for sequential sources, `raw_status` is the single frame's result). Gitignored, like the archived `occupancy_history-*.csv` files.
 - `slotsight/models/`: downloaded weights, all gitignored except `README.md` (model list and licences, including Ultralytics' AGPL-3.0). The default `ultralytics/yolo11s` downloads on first run (`prepare_model()` in `__main__`, only in the reloader's serving process). Other models install from the dashboard or `scripts/models.py`.
 - `slotsight/scripts/measure_update_interval.py`: the R-04 timing test
 - `slotsight/scripts/models.py`: `list`, `install <id>`, `use <id>` for detection models
@@ -48,7 +51,8 @@ API:
 - `POST /api/source` (`target`, `realtime`, `recorded_at`), `POST /api/source/stop`, `GET /api/source`
 - `POST /api/config`, `POST /api/review-threshold`
 - `GET /api/models` (catalogue, active id, running job), `POST /api/models/install` (`id`; 202, background download), `POST /api/models/select` (`id`; must be installed; saves `model` and loads in the background)
-- `GET /api/history.csv`, `GET /api/history.xlsx`
+- `GET /api/history.csv`, `GET /api/history.xlsx`, `GET /api/trends?range=24h|7d` (read-only, cached by history size and modification time)
+- `GET /api/status` also carries `camera` (camera-check state) and, per slot, `raw_status`, `changed_at` and `changed_since_start`
 
 ## Run
 
@@ -77,9 +81,11 @@ The local `.venv` already has Flask, OpenCV, numpy, openpyxl, ultralytics, trans
 - Threading: run inference and model loading outside `state_lock` (status polls must never wait on them). `snapshot()` uses only the non-blocking `models.status()`. `models.require()` blocks while loading and is called only from `detect_vehicles` and scripts. Model calls are serialised by `inference_lock`. Lock order is source_lock → state_lock → ModelManager's internal lock (held briefly); never take state_lock while holding inference_lock or inside ModelManager.
 - Build DOM from server or config data with `textContent` or element creation, not raw `innerHTML` interpolation.
 - Write config files only with `write_atomic` and read them with `read_config`. Never write over a config file that couldn't be read; fall back to the last good copy. GET endpoints must not create or rewrite any file (exports read the history under `state_lock` and parse it outside).
+- The evaluation harness scores single frames (`classify_frame` + review threshold), not smoothed output: labeled frames are independent images. Smoothing is a dashboard layer on top.
 - Validate slots with `slot_config_problem` (unique text ids, at least three points, at least `MIN_SLOT_AREA`). A zero-area slot must classify as unknown, never vacant.
+- Scripts that run frames through the pipeline (timing, evaluation) must redirect `HISTORY_PATH` and replace `camera` with a `CameraMonitor` on a temporary path. Otherwise their first frame becomes the lot's camera reference (this happened once on 2026-11-17).
 - In tests, scope temporary patches with `monkeypatch.context()`. `monkeypatch.undo()` also undoes the fixture's temporary paths and points the app at the user's real files.
-- Don't overwrite the user's `slots.json`, `settings.txt` or `occupancy_history.csv` during tests. Point `app.CONFIG_PATH`, `app.SETTINGS_PATH` and `app.HISTORY_PATH` at a temporary directory and use `app.app.test_client()`. Add `slotsight/` to `sys.path` to import `app`. To test first-run downloads, also set `app.MODELS_DIR` and `app.models = detectors.ModelManager(<temp dir>)`.
+- Don't overwrite the user's `slots.json`, `settings.txt` or `occupancy_history.csv` during tests. Point `app.CONFIG_PATH`, `app.SETTINGS_PATH` and `app.HISTORY_PATH` at a temporary directory and use `app.app.test_client()`. Add `slotsight/` to `sys.path` to import `app`. To test first-run downloads, also set `app.MODELS_DIR` and `app.models = detectors.ModelManager(<temp dir>)`. The `app` fixture also gives each test its own `tracker` and a `camera` whose reference frame is in the temporary folder.
 - The user may have `python slotsight/app.py` running with Flask's debug reloader. Multi-file edits can restart it mid-change and stop it, so tell the user if their server on port 5000 has stopped.
 - The target hardware is a student laptop, CPU-only. Keep the inference rate in mind (R-04: on-screen updates every ≤5 s, measured end to end).
 

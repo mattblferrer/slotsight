@@ -18,7 +18,8 @@ Usage (from the repository root):
     python slotsight/scripts/measure_update_interval.py 0 --seconds 60          # webcam 0
 
 History rows go to a temporary file unless --history is given, so a
-measurement never mixes into occupancy_history.csv.
+measurement never mixes into occupancy_history.csv. The camera-shift reference
+is temporary too, so a measurement never replaces the lot's reference frame.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import app as slotsight  # noqa: E402
+from camera import CameraMonitor  # noqa: E402
 from sources import parse_target, summarize  # noqa: E402
 
 DASHBOARD_POLL_S = 2.0  # keep in sync with POLL_MS in static/app.js
@@ -61,7 +63,10 @@ def main() -> int:
     parser.add_argument("--write", action="store_true", help="append the report to slotsight/docs/evaluation.md")
     args = parser.parse_args()
 
-    slotsight.HISTORY_PATH = Path(args.history) if args.history else Path(tempfile.mkdtemp()) / "measure-history.csv"
+    scratch = Path(tempfile.mkdtemp(prefix="slotsight-measure-"))
+    slotsight.HISTORY_PATH = Path(args.history) if args.history else scratch / "measure-history.csv"
+    # The camera-shift reference belongs to the real lot layout: never let a measurement set it.
+    slotsight.camera = CameraMonitor(scratch / "reference_frame.jpg")
     try:
         model = slotsight.require_model_blocking()  # downloads the default model on first run
     except slotsight.DetectionError as error:

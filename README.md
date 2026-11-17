@@ -39,11 +39,15 @@ README.md, .gitignore
 slotsight/
   app.py                   Flask backend: classification, history, API
   detectors.py             detection models from several providers: registry, install, load
+  tracking.py              smoothing over frames and how long each status has lasted
+  camera.py                camera-shift check against a reference frame
+  trends.py                free slots over time and busy hours, from the history
   sources.py               video file, stream and camera reader
   requirements.txt         Python dependencies
   config/                  files you edit (gitignored; created on first run)
     settings.txt           lot name, thresholds, sample interval, model (JSON)
     slots.json             slot polygons
+    reference_frame.jpg    camera-shift reference (saved with the layout)
   data/                    generated output (gitignored)
     occupancy_history.csv  one row per slot per processed frame
     eval_frames/           labeled test frames (stay local)
@@ -64,6 +68,15 @@ slotsight/
 
 Only one source runs at a time. Starting a new one stops the previous one.
 
+## Reading the dashboard
+
+- **Map:** each slot is filled green (available), red (occupied) or yellow with a dashed edge (unknown). Hover over or tab to a slot to see its status, how long it has had it, its confidence and the time of the reading.
+- **Preview:** the processed frame shows every vehicle detection in blue with its confidence. A solid box marks a slot as occupied. A dashed box is weak or only partly in a slot; those are the detections that turn slots "unknown".
+- **Smoothing (videos and live sources):** a slot shows "occupied" after 2 agreeing frames, "vacant" only after 3, and "unknown" at once. A car driving past doesn't flicker a free slot, and a slot never reads free on a single frame. A slot whose readings keep flipping shows unknown. While a change is being confirmed, the tooltip shows the latest frame's result. Single uploaded images are shown as read.
+- **How long:** the activity list and tooltips show how long each slot has had its status ("occupied · 14m"). "≥" means the status was already there when monitoring started, so it may be longer. For recorded footage, durations are measured in footage time.
+- **Camera check:** the frame the layout was saved on is kept as a reference (`config/reference_frame.jpg`); without one, the first processed frame of a video or live source is used. About every 10th frame of a video or live source is compared with it. If the slots look more than 2% of the frame width out of place in 3 checks in a row, a warning asks you to check the layout. Saving a changed layout sets a new reference. When a frame has too few features to compare (night, fog), the map footer says it can't verify, rather than raising an alarm. Nothing is moved automatically.
+- **Trends:** free slots over the last 24 hours or 7 days of readings, and the average share of slots occupied for each hour of the day, with the three busiest hours marked. They are drawn from the history and refresh every minute. Hover or use the arrow keys for values, or open the table.
+
 ## How slots are classified
 
 The detector treats common vehicle classes (car, motorcycle, bus, truck) as detections. A slot is occupied when a detection overlaps it by at least `overlap_threshold`: the larger of the share of the slot covered by the box and the share of the box inside the slot. Its confidence is the detection's score. A vacant slot's confidence drops when weaker or partial detections overlap it. Any slot below `review_threshold` confidence shows as unknown.
@@ -76,7 +89,7 @@ Your configuration stays on your machine: git ignores both config files, and the
 
 - `config/slots.json`: slot polygons, edited with **Configure slots** or **Edit layout**. Coordinates are normalised from 0 to 100, so a configuration works at any image size.
 - `config/settings.txt`: lot name, `review_threshold`, `overlap_threshold`, `sample_interval_s` (default 2 s) and `model` (default `ultralytics/yolo11s`).
-- `data/occupancy_history.csv`: one row per slot for every processed frame (viewing the dashboard doesn't add rows). Columns: `timestamp, slot_id, status, confidence, source, frame_time_s`, where `frame_time_s` is the frame's position in a video file. The dashboard offers CSV and Excel downloads. Older history files are kept beside it as `occupancy_history-<date>.csv`.
+- `data/occupancy_history.csv`: one row per slot for every processed frame (viewing the dashboard doesn't add rows). Columns: `timestamp, slot_id, status, confidence, source, frame_time_s, raw_status`. `status` is what the dashboard showed (smoothed for videos and live sources), `raw_status` is the single-frame result and `confidence` belongs to it, and `frame_time_s` is the frame's position in a video file. Older files gain the new column automatically. The dashboard offers CSV and Excel downloads. Older history files are kept beside it as `occupancy_history-<date>.csv`.
 - `models/`: downloaded detection models.
 
 On the dashboard map, each slot is filled green (available), red (occupied) or yellow with a dashed edge (unknown), with a pinned label showing its ID and a status symbol (○ ● ?). The time of the last update is in the map's corner, and hovering over or tabbing to a slot shows its status, confidence and update time.

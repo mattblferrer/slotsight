@@ -21,6 +21,8 @@ sys.path.insert(0, str(SLOTSIGHT_DIR / "eval"))
 
 import app as slotsight_app  # noqa: E402
 import detectors  # noqa: E402
+from camera import CameraMonitor  # noqa: E402
+from tracking import SlotTracker  # noqa: E402
 
 # Two side-by-side slots covering the whole frame: easy to reason about in pixels.
 TWO_SLOTS = [
@@ -54,6 +56,9 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(slotsight_app, "HISTORY_PATH", tmp_path / "data" / "occupancy_history.csv")
     monkeypatch.setattr(slotsight_app, "MODELS_DIR", tmp_path / "models")
     monkeypatch.setattr(slotsight_app, "models", detectors.ModelManager(tmp_path / "models"))
+    monkeypatch.setattr(slotsight_app, "REFERENCE_PATH", tmp_path / "config" / "reference_frame.jpg")
+    monkeypatch.setattr(slotsight_app, "camera", CameraMonitor(tmp_path / "config" / "reference_frame.jpg"))
+    monkeypatch.setattr(slotsight_app, "tracker", SlotTracker())
     for name in (
         "latest_frame_snapshot",
         "latest_frame",

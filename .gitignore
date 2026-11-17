@@ -229,6 +229,8 @@ slotsight/models/*
 # defaults in app.py on first run.
 slotsight/config/slots.json
 slotsight/config/settings.txt
+slotsight/config/reference_frame.jpg
+slotsight/config/.*.tmp
 
 # SlotSight evaluation: labeled frames, the detection cache and per-row results stay
 # local; only the labels (slotsight/eval/labels.csv) are tracked.

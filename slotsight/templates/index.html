@@ -12,7 +12,7 @@
     />
     <link
       rel="stylesheet"
-      href="{{ url_for('static', filename='style.css', v='5') }}"
+      href="{{ url_for('static', filename='style.css', v='6') }}"
     />
   </head>
   <body>
@@ -82,6 +82,7 @@
       </section>
 
       <p class="model-alert" id="modelAlert" role="alert" hidden></p>
+      <p class="model-alert" id="cameraAlert" role="alert" hidden></p>
 
       <section class="workspace">
         <div class="panel map-panel">
@@ -144,6 +145,41 @@
             ><span id="refreshInterval">2s</span>
           </div>
         </aside>
+      </section>
+
+      <section class="panel trends-panel" aria-labelledby="trendsTitle">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Trends</p>
+            <h2 id="trendsTitle">Occupancy over time</h2>
+          </div>
+          <div class="trend-range" role="group" aria-label="Time range">
+            <button type="button" data-range="24h" aria-pressed="true">24 h</button
+            ><button type="button" data-range="7d" aria-pressed="false">7 days</button>
+          </div>
+        </div>
+        <p class="trend-note" id="trendNote"></p>
+        <div class="trend-grid" id="trendGrid">
+          <figure class="trend-chart">
+            <figcaption>
+              <strong>Free slots</strong>
+              <span id="freeChartSub">Average per interval, ending at the latest reading</span>
+            </figcaption>
+            <div class="chart-box" id="freeChart"></div>
+          </figure>
+          <figure class="trend-chart">
+            <figcaption>
+              <strong>Busiest hours</strong>
+              <span>Average share of slots occupied, by hour of day (up to 30 days)</span>
+            </figcaption>
+            <div class="chart-box" id="hourChart"></div>
+          </figure>
+        </div>
+        <details class="trend-table">
+          <summary>Show the numbers as a table</summary>
+          <div id="trendTable"></div>
+        </details>
+        <div class="chart-tooltip" id="chartTooltip" role="status" hidden></div>
       </section>
 
       <section class="lower-grid">
@@ -287,6 +323,6 @@
         </div>
       </form>
     </dialog>
-    <script src="{{ url_for('static', filename='app.js', v='5') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='6') }}"></script>
   </body>
 </html>
