@@ -24,6 +24,7 @@ import detectors  # noqa: E402
 from camera import CameraMonitor  # noqa: E402
 from tracking import SlotTracker  # noqa: E402
 from appearance import EmptyReference  # noqa: E402
+from classifier import SlotClassifier  # noqa: E402
 
 # Two side-by-side slots covering the whole frame: easy to reason about in pixels.
 TWO_SLOTS = [
@@ -64,6 +65,8 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(slotsight_app, "camera", CameraMonitor(tmp_path / "config" / "reference_frame.jpg"))
     monkeypatch.setattr(slotsight_app, "tracker", SlotTracker())
     monkeypatch.setattr(slotsight_app, "empty_reference", EmptyReference())
+    # No weights in the temporary models folder: tests use the detector alone unless they add a classifier.
+    monkeypatch.setattr(slotsight_app, "slot_classifier", SlotClassifier(tmp_path / "models"))
     monkeypatch.setattr(slotsight_app, "LABELS_PATH", tmp_path / "eval" / "labels.csv")
     monkeypatch.setattr(slotsight_app, "EVAL_FRAMES_DIR", tmp_path / "data" / "eval_frames")
     for name in (

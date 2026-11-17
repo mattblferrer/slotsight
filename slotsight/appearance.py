@@ -51,6 +51,7 @@ import numpy as np
 
 PATCH = (48, 48)
 DEFAULT_THRESHOLD = 0.8
+REASON = "doesn't look empty"  # the `reason` this check gives (other steps give their own)
 UPDATE_RATE = 0.2
 HISTORY = 30  # edge densities kept per slot for its baseline
 BASELINE_PERCENTILE = 25
@@ -139,7 +140,7 @@ class EmptyReference:
                     diff = difference(patch, reference)
                     result["empty_diff"] = round(diff, 3)
                     if diff > threshold:
-                        result.update(status="unknown", reason="doesn't look empty")
+                        result.update(status="unknown", reason=REASON)
                 # Learn from the detector's vacant reading if its edges look like an empty slot.
                 density = edge_density(edges, slot_polygon(grey, slot["points"]))
                 history = self._densities.setdefault(key, deque(maxlen=HISTORY))

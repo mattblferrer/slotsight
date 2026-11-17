@@ -224,6 +224,9 @@ __marimo__/
 # the dashboard, or with scripts/models.py) and never committed; only its README is tracked.
 slotsight/models/*
 !slotsight/models/README.md
+# The per-slot classifier's small base weights (about 250 KB, trained on PKLot, CC BY 4.0).
+!slotsight/models/slot_classifier_base.pt
+!slotsight/models/slot_classifier_base.json
 
 # SlotSight: your lot's configuration is local. The app creates both files from the
 # defaults in app.py on first run.

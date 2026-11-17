@@ -1050,6 +1050,20 @@ dialog::backdrop {
   text-transform: uppercase;
   letter-spacing: 1px;
 }
+.config-check {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 18px 0 4px;
+  font: 10px var(--mono);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.config-check small {
+  text-transform: none;
+  letter-spacing: 0;
+}
 .config-field input,
 .config-field select {
   width: 100%;

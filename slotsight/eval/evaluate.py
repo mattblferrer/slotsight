@@ -253,14 +253,19 @@ def run_pipeline(
             detections = slotsight.detect_vehicles(image)
             cache[key] = [list(box) for box in detections]
             cache_changed = True
-        raw_results = slotsight.classify_frame(image, slots, detections, overlap_threshold)
-        raw_status = {result["id"]: result["status"] for result in raw_results}
-        shown = slotsight.apply_review_threshold([dict(result) for result in raw_results], review_threshold)
+        settings = {**slotsight.load_settings(), "overlap_threshold": overlap_threshold, "review_threshold": review_threshold}
+        probabilities = slotsight.slot_probabilities(image, slots, settings)
+        shown = slotsight.decide(image, slots, detections, settings, probabilities)
+        if probabilities is None:
+            raw_results = slotsight.classify_frame(image, slots, detections, overlap_threshold)
+            raw_status = {result["id"]: result["status"] for result in raw_results}
+        else:  # the classifier's own call, before the review threshold and the detector's vote
+            raw_status = {str(slot["id"]): ("occupied" if p_occ >= p_vac else "vacant") for slot, (p_vac, p_occ) in zip(slots, probabilities)}
         shown = reference.check(image, slots, shown, empty_check_threshold)
         shown_by_id = {result["id"]: result for result in shown}
         for label in frame_labels:
             result = shown_by_id[label.slot_id]
-            outcomes.append(Outcome(label, result["status"], raw_status[label.slot_id], result["confidence"], bool(result.get("reason"))))
+            outcomes.append(Outcome(label, result["status"], raw_status[label.slot_id], result["confidence"], result.get("reason") == appearance.REASON))
         if index % 25 == 0:
             print(f"  {index}/{len(by_frame)} frames", file=sys.stderr)
     if cache_path and cache_changed:
@@ -537,7 +542,8 @@ def main() -> int:
             "labels": args.labels.name + "".join(f" --only {p}" for p in args.only) + "".join(f" --exclude {p}" for p in args.exclude),
             "note": args.note,
             "slot_ids": slot_ids,
-            "model": slotsight.model_status()["name"],
+            "model": slotsight.model_status()["name"]
+            + (f" + slot classifier ({slotsight.slot_classifier.status().get('weights')})" if slotsight.load_settings()["slot_classifier"] and slotsight.slot_classifier.weights_path() else " (detector alone)"),
             "size": slotsight.load_settings()["inference_size"],
             "empty_check": empty_check,
             "overlap": overlap,

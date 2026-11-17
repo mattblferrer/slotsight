@@ -25,6 +25,14 @@ All of them are trained on COCO. SlotSight uses only their car, motorcycle, bus 
 | `rfdetr/nano`, `rfdetr/small` | [Roboflow RF-DETR](https://github.com/roboflow/rf-detr) | Apache-2.0 | 366 to 386 MB | `rfdetr` |
 | `opencv/yolox-s` | [OpenCV model zoo](https://huggingface.co/opencv/object_detection_yolox) (YOLOX-S) | Apache-2.0 | 36 MB | none (uses OpenCV) |
 
+## Slot classifier weights
+
+`slot_classifier_base.pt` (about 250 KB, tracked in git) holds the per-slot classifier (`slotsight/classifier.py`). This is the one weights file kept in the repository, because it is small and the app needs it to classify slots. It was trained from scratch by SlotSight on a 603-frame subset of the **PKLot** dataset:
+
+> P. R. L. de Almeida, L. S. Oliveira, A. S. Britto Jr., E. J. Silva Jr. and A. L. Koerich, "PKLot - A robust dataset for parking lot classification", *Expert Systems with Applications* 42 (2015). Licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) by the Universidade Federal do Paraná (UFPR). Frames obtained from the [Voxel51/PKLot](https://huggingface.co/datasets/Voxel51/PKLot) mirror.
+
+`slot_classifier_base.json` records how it was trained. Running `python slotsight/eval/train_classifier.py` fine-tunes it on this lot's labeled tune sessions and saves `slot_classifier.pt` here (not tracked), which the app uses instead of the base weights.
+
 ## The Ultralytics licence (AGPL-3.0)
 
 The `ultralytics` package and its YOLO weights are licensed under the [GNU AGPL-3.0](https://www.ultralytics.com/license). AGPL-3.0 is a strong copyleft licence. If you distribute software that uses them, or let other people use it over a network (for example, a hosted dashboard), you must make the complete source code of that software available under AGPL-3.0. Commercial use without that obligation needs an [Ultralytics Enterprise licence](https://www.ultralytics.com/license).

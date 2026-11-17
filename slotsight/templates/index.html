@@ -12,7 +12,7 @@
     />
     <link
       rel="stylesheet"
-      href="{{ url_for('static', filename='style.css', v='8') }}"
+      href="{{ url_for('static', filename='style.css', v='9') }}"
     />
   </head>
   <body>
@@ -75,8 +75,8 @@
           <span class="stat-label">System health</span
           ><strong id="modelLabel">Demo</strong
           ><span class="stat-detail"
-            ><span class="health-pill">● Online</span> / refresh &lt; 5
-            sec</span
+            ><span class="health-pill">● Online</span> /
+            <span id="classifierLabel">refresh &lt; 5 sec</span></span
           >
         </article>
       </section>
@@ -307,6 +307,10 @@
             value="70"
           />
         </label>
+        <label class="config-check" for="classifierInput">
+          <input type="checkbox" id="classifierInput" checked />
+          <span>Use the slot classifier <small id="classifierNote"></small></span>
+        </label>
         <label class="config-field" for="inferenceSizeInput">
           <span>Detection resolution <small id="inferenceSizeNote"></small></span>
           <select id="inferenceSizeInput">
@@ -332,6 +336,6 @@
         </div>
       </form>
     </dialog>
-    <script src="{{ url_for('static', filename='app.js', v='7') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='8') }}"></script>
   </body>
 </html>

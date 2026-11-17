@@ -41,6 +41,7 @@ slotsight/
   detectors.py             detection models from several providers: registry, install, load
   tracking.py              smoothing over frames and how long each status has lasted
   appearance.py            "doesn't look empty" safeguard for cars the detector misses
+  classifier.py            per-slot classifier (the primary decision; the detector votes)
   camera.py                camera-shift check against a reference frame
   trends.py                free slots over time and busy hours, from the history
   sources.py               video file, stream and camera reader
@@ -52,7 +53,8 @@ slotsight/
   data/                    generated output (gitignored)
     occupancy_history.csv  one row per slot per processed frame
     eval_frames/           labeled test frames (stay local)
-  models/                  downloaded detection models (gitignored); README lists licences
+  models/                  downloaded detection models (gitignored), the slot classifier's
+                           base weights (tracked); README lists licences
   static/, templates/      dashboard UI
   scripts/                 model installer (models.py) and the R-04 timing test
   tests/                   pytest suite (python -m pytest slotsight/tests)
@@ -83,7 +85,14 @@ Only one source runs at a time. Starting a new one stops the previous one.
 
 ## How slots are classified
 
-The detector treats common vehicle classes (car, motorcycle, bus, truck) as detections. A slot is occupied when a detection overlaps it by at least `overlap_threshold`: the larger of the share of the slot covered by the box and the share of the box inside the slot. Its confidence is the detection's score. A vacant slot's confidence drops when weaker or partial detections overlap it. Any slot below `review_threshold` confidence shows as unknown.
+Two models look at every frame:
+
+- **The slot classifier** (`classifier.py`) decides. A small neural network (about 61k parameters) looks at each slot's own image, straightened to a 48×48 patch, and gives the probability that it's occupied. It ships with base weights trained on the public PKLot dataset, and `python slotsight/eval/train_classifier.py` fine-tunes them on this lot's labeled tune sessions in a minute or two on the CPU.
+- **The vehicle detector** (the selected detection model) votes. A slot reads **vacant** only if the classifier says so *and* the detector sees no vehicle there. Otherwise it reads **unknown**, so a disagreement never shows as free. The detector's boxes are also what you see on the preview.
+
+A slot whose classifier confidence is below `review_threshold` shows as unknown. Without classifier weights, or with **Use the slot classifier** switched off in Configure slots, the detector decides alone: a slot is occupied when a detection overlaps it by at least `overlap_threshold` (the larger of the share of the slot covered by the box and the share of the box inside the slot).
+
+On PKLot (other lots, so proxy evidence only), this combination scored 97.6 % per-slot on camera views it was never trained on, against 52.7 % for the detector alone. See [`slotsight/docs/evaluation.md`](slotsight/docs/evaluation.md).
 
 ## Configuration and data
 
@@ -92,7 +101,7 @@ All paths are under `slotsight/`:
 Your configuration stays on your machine: git ignores both config files, and the app recreates them from its defaults if they're missing.
 
 - `config/slots.json`: slot polygons, edited with **Configure slots** or **Edit layout**. Coordinates are normalised from 0 to 100, so a configuration works at any image size.
-- `config/settings.txt`: lot name, `review_threshold`, `overlap_threshold`, `sample_interval_s` (default 2 s), `inference_size` (640, 960 or 1280; default 640), `empty_check_threshold` (default 0.8; 0 = off) and `model` (default `ultralytics/yolo11s`).
+- `config/settings.txt`: lot name, `review_threshold`, `overlap_threshold`, `sample_interval_s` (default 2 s), `inference_size` (640, 960 or 1280; default 640), `empty_check_threshold` (default 0.8; 0 = off), `slot_classifier` (default `true`) and `model` (default `ultralytics/yolo11s`).
 - `data/occupancy_history.csv`: one row per slot for every processed frame (viewing the dashboard doesn't add rows). Columns: `timestamp, slot_id, status, confidence, source, frame_time_s, raw_status`. `status` is what the dashboard showed (smoothed for videos and live sources), `raw_status` is the single-frame result and `confidence` belongs to it, and `frame_time_s` is the frame's position in a video file. Older files gain the new column automatically. The dashboard offers CSV and Excel downloads. Older history files are kept beside it as `occupancy_history-<date>.csv`.
 - `models/`: downloaded detection models.
 

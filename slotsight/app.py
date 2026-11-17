@@ -22,6 +22,7 @@ from camera import CameraMonitor
 from sources import SourceWorker, parse_target
 from tracking import SlotTracker, unsmoothed
 import appearance
+import classifier
 import labeling
 import trends
 
@@ -92,6 +93,8 @@ tracker = SlotTracker()
 camera = CameraMonitor(REFERENCE_PATH)
 # Learns each slot's empty look; a vacant reading that doesn't look empty becomes unknown.
 empty_reference = appearance.EmptyReference()
+# Per-slot CNN (classifier.py): the primary decision, with the detector as a safety vote.
+slot_classifier = classifier.SlotClassifier(MODELS_DIR)
 latest_frame_snapshot: dict[str, Any] | None = None
 latest_frame = None
 latest_frame_detections = None
@@ -231,6 +234,8 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
         "sample_interval_s": sample_interval(settings.get("sample_interval_s")),
         # Longest side frames are resized to before detection (Ultralytics models only).
         "inference_size": inference_size(settings.get("inference_size")),
+        # Per-slot classifier (classifier.py) decides, the detector votes; false = detector alone.
+        "slot_classifier": settings.get("slot_classifier", True) is not False,
         # "Doesn't look empty" safeguard (appearance.py): 0 turns it off.
         "empty_check_threshold": empty_check_threshold(settings.get("empty_check_threshold")),
         # A model id such as "ultralytics/yolo11s". Older files had `model_path`
@@ -475,6 +480,25 @@ def classify_frame(frame, slots: list[dict[str, Any]], detections, overlap_thres
     return results
 
 
+def slot_probabilities(frame, slots: list[dict[str, Any]], settings: dict[str, Any] | None = None):
+    """The classifier's (P(vacant), P(occupied)) per slot, or None to use the detector alone."""
+    settings = settings or load_settings()
+    if not settings["slot_classifier"]:
+        return None
+    return slot_classifier.predict(frame, slots)
+
+
+def decide(frame, slots: list[dict[str, Any]], detections, settings: dict[str, Any], probabilities=None) -> list[dict[str, Any]]:
+    """Every slot's status after the review threshold: the classifier decides and the
+    detector is a safety vote for "vacant" (classifier.combine). Without a classifier,
+    the detector's own results. Shared by the dashboard and the evaluation harness.
+    """
+    detector_results = classify_frame(frame, slots, detections, settings["overlap_threshold"])
+    if probabilities is None:
+        probabilities = slot_probabilities(frame, slots, settings)
+    return classifier.combine(detector_results, probabilities, settings["review_threshold"])
+
+
 def apply_review_threshold(results: list[dict[str, Any]], review_threshold: float) -> list[dict[str, Any]]:
     """Show any slot below `review_threshold` confidence as "unknown" rather than a guess (R-07)."""
     for result in results:
@@ -579,6 +603,7 @@ def snapshot(
     captured_at: datetime | None = None,
     processed_at: datetime | None = None,
     smooth: bool = False,
+    probabilities=None,
 ) -> dict[str, Any]:
     """Build the dashboard payload.
 
@@ -603,7 +628,8 @@ def snapshot(
     if frame is not None:
         if detections is None:
             detections = detect_vehicles(frame)
-        results = classify_frame(frame, slots, detections, settings["overlap_threshold"])
+        # The review threshold is applied inside decide() for frames.
+        results = decide(frame, slots, detections, settings, probabilities)
         source = source or "latest frame"
         updated_at = (processed_at or datetime.now(timezone.utc)).isoformat(timespec="seconds")
     elif has_model:
@@ -615,7 +641,8 @@ def snapshot(
         results, source, record = waiting_results(slots), "model error", False
 
     review_threshold = settings["review_threshold"]
-    apply_review_threshold(results, review_threshold)
+    if frame is None:
+        apply_review_threshold(results, review_threshold)
     if frame is not None:
         if smooth:
             # Frames of a video or live source: catch missed cars, then smooth.
@@ -646,6 +673,7 @@ def snapshot(
         "review_threshold": review_threshold,
         "overlap_threshold": settings["overlap_threshold"],
         "inference_size": settings["inference_size"],
+        "classifier": {**slot_classifier.status(), "enabled": settings["slot_classifier"]},
     }
     if frame is not None:
         response["preview_image"] = annotate_frame(
@@ -678,8 +706,12 @@ def store_reading(
     frame_time_s: float | None = None,
     captured_at: datetime | None = None,
     smooth: bool = False,
+    probabilities=None,
 ) -> dict[str, Any]:
     """Make `frame` the latest reading and append it to the history. Caller holds state_lock.
+
+    Pass `probabilities` (slot_probabilities, computed outside the lock) so the
+    classifier doesn't run while state_lock is held.
 
     `smooth` is set for frames of a video or live source; a single image resets the tracker.
     """
@@ -703,6 +735,7 @@ def store_reading(
         captured_at=captured_at,
         processed_at=latest_frame_processed_at,
         smooth=smooth,
+        probabilities=probabilities,
     )
     return latest_frame_snapshot
 
@@ -718,12 +751,18 @@ def frame_handler(source_name: str, recorded_at: datetime | None = None):
 
     def on_frame(frame, frame_time_s: float | None) -> None:
         detections = detect_vehicles(frame)
-        camera.observe(frame, load_slots())  # every Nth frame; outside state_lock
+        slots = load_slots()
+        probabilities = slot_probabilities(frame, slots)  # outside state_lock, like detection
+        camera.observe(frame, slots)  # every Nth frame; outside state_lock
         with state_lock:
             worker = owner[0] if owner else None
             if worker is None or worker.stopping or active_source is not worker:
                 return
-            store_reading(frame, source_name, detections, frame_time_s, capture_time(recorded_at, frame_time_s), smooth=True)
+            if load_slots() != slots:
+                probabilities = None  # the layout changed meanwhile: classify again under the lock
+            store_reading(
+                frame, source_name, detections, frame_time_s, capture_time(recorded_at, frame_time_s), smooth=True, probabilities=probabilities
+            )
 
     on_frame.owner = owner  # type: ignore[attr-defined]
     return on_frame
@@ -851,10 +890,13 @@ def config():
         size = None
     if size not in detectors.INFERENCE_SIZES:
         return jsonify({"error": f"Detection resolution must be one of {', '.join(map(str, detectors.INFERENCE_SIZES))}."}), 400
+    use_classifier = payload.get("slot_classifier", settings["slot_classifier"])
+    if not isinstance(use_classifier, bool):
+        return jsonify({"error": "slot_classifier must be true or false."}), 400
     with state_lock:
         layout_changed = slots != load_slots()
         save_slots(slots)
-        save_settings(lot_name=lot_name.strip(), review_threshold=review_threshold, inference_size=size)
+        save_settings(lot_name=lot_name.strip(), review_threshold=review_threshold, inference_size=size, slot_classifier=use_classifier)
         reclassify_latest_frame()
         frame = latest_frame
     message = "Lot configuration saved."
@@ -914,8 +956,12 @@ def process():
     except DetectionError as error:
         app.logger.exception("Could not process %s", uploaded.filename)
         return jsonify({"error": str(error)}), error.status_code
+    slots = load_slots()
+    probabilities = slot_probabilities(frame, slots)  # outside state_lock, like detection
     with state_lock:
-        payload = store_reading(frame, uploaded.filename, detections, captured_at=recorded_at)
+        if load_slots() != slots:
+            probabilities = None
+        payload = store_reading(frame, uploaded.filename, detections, captured_at=recorded_at, probabilities=probabilities)
     return jsonify({**payload, "job": source_status()})
 
 

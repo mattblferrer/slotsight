@@ -1,0 +1,16 @@
+{
+  "trained_at": "2026-11-17T11:17:04+00:00",
+  "sources": [
+    "PKLot subset: pucpr",
+    "PKLot subset: ufpr04",
+    "PKLot subset: ufpr05"
+  ],
+  "start": null,
+  "frames": 513,
+  "patches": 28016,
+  "epochs": 8,
+  "validation_frames": 90,
+  "validation_accuracy": 0.9981,
+  "dataset": "PKLot (de Almeida et al., 2015), CC BY 4.0, UFPR; 603-frame seeded subset of the Voxel51/PKLot mirror, 67 frames per view and weather",
+  "note": "validation_accuracy is on held-out frames from the same three views (optimistic); leave-one-view-out accuracy was 97-99 %"
+}

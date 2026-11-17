@@ -78,6 +78,36 @@ The safeguard (`appearance.py`) turns a vacant reading into unknown when the slo
 
 It improves safety (R-07), not accuracy: caught cars become unknown, which still counts as wrong for R-01. By view at 0.8, occupied shown as free drops from 7,860 to 2,666 (PUCPR), 192 to 104 (UFPR04), and 1,115 to 834 (UFPR05), at a cost of 449, 51 and 128 truly empty slots shown unknown. PKLot frames are hours apart; live sampling every 2 s gives the learned references far fresher lighting. Proxy evidence only.
 
+#### Improving accuracy cheaply: what was tried on PKLot (one-off research, 2026-11-17)
+
+Proxy evidence only (public data, not the target lot). Detector variants were scored on a 63-frame sample (21 per view) with yolo11s and the default thresholds:
+
+| Approach | Pooled accuracy | Occupied shown as free | CPU per frame | Notes |
+| --- | --- | --- | --- | --- |
+| Detector, full frame, 640 px (before) | 50.1 % | 1,019 | 0.06 s | |
+| Car matched to slot by box centre or ground-contact point instead of overlap | 49.7-50.1 % | 1,030-1,062 | 0.06 s | no gain |
+| Crop to the slot area, 640 / 960 px | 50.5 % / 55.0 % | 1,152 / 918 | 0.04 / 0.08 s | small gain at 960 |
+| Full frame, 1280 px | 56.9 % | 579 | 0.13 s | helps the closer views only |
+| Slot area in 2×2 tiles (SAHI-style) | 57.1 % | 836 | 0.16 s | UFPR04 80 %, UFPR05 67 %; PUCPR unchanged |
+| **Per-slot classifier (61k-parameter CNN)** | **97-99 %** on an unseen view | **-99 %** | **+0.016 s per 100 slots** | adopted |
+
+The per-slot classifier is the approach of the PKLot/CNRPark literature: mAlexNet (Amato et al., 2017), 90-98 %; MobileNetV3 ([Yuldashev et al., Sensors 2023](https://www.mdpi.com/1424-8220/23/17/7642)), 98 %; and compressed MobileNet variants at 0.75 ms per slot on a Raspberry Pi 5. Cross-lot accuracy is known to vary: one distilled lightweight model reached 80.9 % on unseen datasets ([arXiv 2410.14705](https://arxiv.org/html/2410.14705v1)).
+
+**The pipeline as built, leave-one-view-out.** For each view, the classifier was trained from scratch on the other two views, then the full dashboard pipeline (classifier, detector vote for "vacant", review threshold 0.7, optionally the "doesn't look empty" check) was scored on the unseen view. PUCPR is a different lot from UFPR04/UFPR05.
+
+| Test view | Empty check | Per-slot accuracy | Coverage | Occupied shown as free |
+| --- | --- | --- | --- | --- |
+| PUCPR (unseen lot) | off | 97.5 % | 98.8 % | 27 of 9,332 |
+| PUCPR (unseen lot) | 0.8 | 97.1 % | 98.3 % | 4 |
+| UFPR04 | off | 98.2 % | 98.5 % | 1 |
+| UFPR04 | 0.8 | 97.5 % | 97.7 % | 0 |
+| UFPR05 | off | 97.3 % | 98.2 % | 20 |
+| UFPR05 | 0.8 | 96.9 % | 97.7 % | 17 |
+| **Pooled** | off | **97.6 %** | | 48 of 17,185 |
+| **Pooled** | **0.8 (default)** | **97.1 %** | | **21** |
+
+With the classifier in place, the empty check catches 27 more missed cars at a cost of 158 empty slots shown as unknown. It stays on by default (safety first, R-07); revisit with the target lot's data. With 10 labeled frames from the target view added to training, classifier accuracy rose by a further 0.4-1.2 points. Base weights for the app were then trained on all three views (`models/slot_classifier_base.pt`). PKLot is daylight-only, and its three views are elevated cameras over university lots, so the target lot's evening and rain frames and its own camera angle remain untested.
+
 ## R-04: Update interval
 
 ### R-04 timing run: 2026-11-17 04:03
@@ -214,3 +244,18 @@ It improves safety (R-07), not accuracy: caught cars become unknown, which still
 
 - Worst-case gap between dashboard updates: 4.05 s (target <= 5 s): **PASS**
 - Worst-case age of the displayed reading: 4.29 s
+
+### R-04 timing run: 2026-11-17 19:31
+
+- Source: footage_1080p.mp4 (file, played at recorded speed) - synthetic 1080p30 footage (bus.jpg sample, static); yolo11s + slot classifier (base) + doesn't-look-empty check, not lot evidence
+- Machine: AMD64 Family 26 Model 36 Stepping 0, AuthenticAMD / CPU only / Python 3.14.7
+- Model: YOLO11 small (ultralytics/yolo11s); inference size 640; frame size 1920x1080; 6 slots
+- Sample interval 2 s; dashboard poll 2 s; 31 readings over 60 s
+
+| Measure | Mean | p95 | Max |
+| --- | --- | --- | --- |
+| Processing time per frame (s) | 0.12 | 0.203 | 0.427 |
+| Interval between readings (s) | 1.995 | 2.126 | 2.2 |
+
+- Worst-case gap between dashboard updates: 4.20 s (target <= 5 s): **PASS**
+- Worst-case age of the displayed reading: 4.63 s

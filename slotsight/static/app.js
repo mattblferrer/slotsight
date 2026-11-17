@@ -283,6 +283,14 @@ function modelLabel(data) {
   return "Model error";
 }
 
+// Health card: which per-slot decision is in use.
+function classifierLabel(status) {
+  if (!status || !status.enabled) return "detector only";
+  if (status.state === "ready") return `slot classifier: ${status.kind}`;
+  if (status.state === "error") return "slot classifier failed: detector only";
+  return "no slot classifier: detector only";
+}
+
 // Explains, in plain words, why there are no real readings: no model installed
 // (demo data) or a model that can't be used (an error, never demo data).
 function renderModelAlert(data) {
@@ -333,6 +341,7 @@ function render(data) {
   $("sourceLabel").textContent = sourceLabels[data.source] ?? data.source;
   $("modelLabel").textContent = modelLabel(data);
   renderModelAlert(data);
+  $("classifierLabel").textContent = classifierLabel(data.classifier);
   state.lotName = data.lot_name || state.lotName;
   state.reviewThreshold = data.review_threshold ?? state.reviewThreshold;
   $("lotNameLabel").textContent = state.lotName;
@@ -725,6 +734,8 @@ $("openConfig").addEventListener("click", async () => {
   );
   $("reviewThresholdValue").textContent = `${$("reviewThresholdInput").value}%`;
   $("inferenceSizeInput").value = String(data.inference_size ?? 640);
+  $("classifierInput").checked = data.classifier?.enabled ?? true;
+  $("classifierNote").textContent = data.classifier?.state === "ready" ? `(${data.classifier.kind})` : "(no weights: the detector decides alone)";
   $("configInput").value = JSON.stringify(slots, null, 2);
   $("modelMessage").textContent = "";
   $("configDialog").showModal();
@@ -745,6 +756,7 @@ $("saveConfig").addEventListener("click", async (event) => {
         lot_name: lotName,
         review_threshold: reviewThreshold,
         inference_size: Number($("inferenceSizeInput").value),
+        slot_classifier: $("classifierInput").checked,
       }),
     });
     const data = await response.json();

@@ -18,6 +18,7 @@ def test_first_run_creates_both_config_files_from_defaults(app):
         "overlap_threshold": app.DEFAULT_OVERLAP_THRESHOLD,
         "sample_interval_s": app.DEFAULT_SAMPLE_INTERVAL_S,
         "inference_size": 640,
+        "slot_classifier": True,
         "empty_check_threshold": 0.8,
         "model": app.DEFAULT_MODEL,
     }
