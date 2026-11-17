@@ -40,6 +40,8 @@ class SlotTrack:
     since_start: bool = True
     warming: bool = True  # still on the first status: nothing has changed yet
     recent: deque[str] = field(default_factory=lambda: deque(maxlen=WINDOW))
+    # State before the latest reading, so that reading can be revised (re-classified).
+    before: tuple | None = None
 
 
 def next_status(shown: str, recent: list[str]) -> str:
@@ -73,10 +75,23 @@ class SlotTracker:
         Returns new result dicts with `status` (shown), `raw_status`, `confidence`
         (of the raw reading), `changed_at` and `changed_since_start`.
         """
+        return self._apply(results, at, revise=False)
+
+    def revise(self, results: list[dict[str, Any]], at: datetime) -> list[dict[str, Any]]:
+        """Replace the latest reading with a re-classification of the same frame
+        (after a threshold or layout change): smoothing state as if it had been read
+        this way, without counting it as a second frame."""
+        return self._apply(results, at, revise=True)
+
+    def _apply(self, results: list[dict[str, Any]], at: datetime, revise: bool) -> list[dict[str, Any]]:
         smoothed = []
         with self._lock:
             for result in results:
                 track = self._tracks.setdefault(result["id"], SlotTrack())
+                if revise and track.before is not None and track.recent:
+                    track.shown, track.since, track.since_start, track.warming = track.before
+                    track.recent.pop()
+                track.before = (track.shown, track.since, track.since_start, track.warming)
                 track.recent.append(result["status"])
                 status = next_status(track.shown, list(track.recent))
                 if track.since is None:  # first frame for this slot

@@ -83,7 +83,11 @@ def use(model_id: str) -> int:
     if not detectors.is_installed(spec, slotsight.MODELS_DIR):
         print(f"{spec.name} is not installed. Run: python slotsight/scripts/models.py install {model_id}", file=sys.stderr)
         return 1
-    slotsight.save_settings(model=model_id)
+    try:
+        slotsight.save_settings(model=model_id)
+    except slotsight.ConfigReadError:
+        print(f"{slotsight.SETTINGS_PATH} can't be read right now (open elsewhere, or a typo?). Nothing was saved.", file=sys.stderr)
+        return 1
     print(f"Active model: {spec.name} ({model_id}). A running dashboard picks it up on its next frame.")
     if not detectors.package_available(spec.provider):
         print(f"It needs its Python package first: pip install {detectors.PROVIDERS[spec.provider].pip}")

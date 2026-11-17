@@ -108,6 +108,43 @@ The per-slot classifier is the approach of the PKLot/CNRPark literature: mAlexNe
 
 With the classifier in place, the empty check catches 27 more missed cars at a cost of 158 empty slots shown as unknown. It stays on by default (safety first, R-07); revisit with the target lot's data. With 10 labeled frames from the target view added to training, classifier accuracy rose by a further 0.4-1.2 points. Base weights for the app were then trained on all three views (`models/slot_classifier_base.pt`). PKLot is daylight-only, and its three views are elevated cameras over university lots, so the target lot's evening and rain frames and its own camera angle remain untested.
 
+#### Re-measured after the 2026-11-18 review fixes
+
+Slot patches are now cut with a fixed corner order (clockwise from the top-left) and the classifier is trained with quarter-turn augmentation; the base weights were retrained. Same leave-one-view-out protocol as above:
+
+| Test view | Empty check | Per-slot accuracy | Coverage | Occupied shown as free |
+| --- | --- | --- | --- | --- |
+| PUCPR (unseen lot) | off / 0.8 | 98.2 % / 97.7 % | 99.0 % / 98.4 % | 26 / 4 |
+| UFPR04 | off / 0.8 | 98.6 % / 97.9 % | 99.0 % / 98.3 % | 0 / 0 |
+| UFPR05 | off / 0.8 | 96.4 % / 96.0 % | 97.8 % / 97.4 % | 17 / 14 |
+| **Pooled** | **off / 0.8 (default)** | **97.8 % / 97.4 %** | | **43 / 18** of 17,185 |
+
+At 0.8 the empty check caught 25 missed cars and turned 151 truly empty slots unknown.
+
+#### R-02 proxy with the slot classifier (2026-11-18)
+
+Same leave-one-view-out protocol; frames where every slot is labeled. Exact match is what R-02 asks for; "within 1" is context. Unknown slots count as not free.
+
+| Test view (slots) | Frames | Exact match, check off / 0.8 | Within 1 slot | Mean abs. error (slots) | Frames showing too many free |
+| --- | --- | --- | --- | --- | --- |
+| PUCPR (100) | 189 | 47.6 % / 36.0 % | 67.7 % / 61.4 % | 1.66 / 1.99 | 6 / 2 |
+| UFPR04 (28) | 191 | 80.1 % / 74.9 % | 93.7 % / 90.6 % | 0.35 / 0.54 | 0 / 0 |
+| UFPR05 (40) | 176 | 71.0 % / 67.6 % | 86.4 % / 83.0 % | 1.23 / 1.38 | 10 / 8 |
+| **Pooled** | 556 | **66.2 % / 59.4 %** | **82.6 % / 78.2 %** | | 16 / 10 |
+
+With the detector alone the pooled exact match was 43.7 %. R-02 is far stricter than R-01: one wrong or unknown slot anywhere breaks the match, so the exact-match rate is roughly the per-slot accuracy raised to the number of slots. Reaching 90 % exact needs per-slot errors (wrong or unknown) of about 1 % for 10 slots, 0.5 % for 20 and 0.35 % for 30, against about 2.2 % here. The empty check lowers R-02 (more unknowns) while improving R-07 (fewer false "free" readings). Smoothing across frames, which this single-frame scoring leaves out, should help R-02 on live footage.
+
+#### Low light: synthetic dusk and night (2026-11-18, weak evidence)
+
+PKLot has no evening frames, so the unseen view's test patches were darkened: dusk at 45 % brightness with gamma 1.3 and mild noise; night at 20 % with gamma 1.6, more noise and an orange street-lamp tint. Classifier only (no detector vote), leave-one-view-out, review threshold 0.7. Real night footage (headlights, glare, pools of lamp light) is harder to model than this.
+
+| Classifier training | Daylight | Dusk | Night |
+| --- | --- | --- | --- |
+| Before: brightness jitter only | 98.0 %, 44 occupied shown free | 89.0 %, 1,293 | **48.1 %, 16,501** (confidently wrong: coverage 99 %) |
+| **Now: plus low-light augmentation** | **98.3 %, 41** | **94.4 %, 18** | 63.3 %, 238 (doubt shows as unknown: coverage 63 %) |
+
+The earlier classifier called nearly every occupied slot "free" at night, the worst error for R-07. Training on darkened, noisy, tinted patches (half of each batch) costs nothing in daylight, makes dusk much better, and fails safe at night. Night accuracy still needs real night footage (R-05). The base weights were retrained this way. The full pipeline, leave-one-view-out in daylight: **97.8 % per-slot (97.4 % with the empty check), occupied shown as free 29 (13 with the empty check) of 17,185**.
+
 ## R-04: Update interval
 
 ### R-04 timing run: 2026-11-17 04:03
@@ -259,3 +296,18 @@ With the classifier in place, the empty check catches 27 more missed cars at a c
 
 - Worst-case gap between dashboard updates: 4.20 s (target <= 5 s): **PASS**
 - Worst-case age of the displayed reading: 4.63 s
+
+### R-04 timing run: 2026-11-18 02:27
+
+- Source: footage_1080p.mp4 (file, played at recorded speed) - synthetic 1080p30 footage (bus.jpg sample, static); yolo11s + slot classifier (base, after the 2026-11-18 review fixes) + doesn't-look-empty check, not lot evidence
+- Machine: AMD64 Family 26 Model 36 Stepping 0, AuthenticAMD / CPU only / Python 3.14.7
+- Model: YOLO11 small (ultralytics/yolo11s); inference size 640; frame size 1920x1080; 6 slots
+- Sample interval 2 s; dashboard poll 2 s; 31 readings over 60 s
+
+| Measure | Mean | p95 | Max |
+| --- | --- | --- | --- |
+| Processing time per frame (s) | 0.108 | 0.179 | 0.383 |
+| Interval between readings (s) | 1.995 | 2.087 | 2.163 |
+
+- Worst-case gap between dashboard updates: 4.16 s (target <= 5 s): **PASS**
+- Worst-case age of the displayed reading: 4.55 s

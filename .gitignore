@@ -233,6 +233,7 @@ slotsight/models/*
 slotsight/config/slots.json
 slotsight/config/settings.txt
 slotsight/config/reference_frame.jpg
+slotsight/config/reference_frame.json
 slotsight/config/.*.tmp
 
 # SlotSight evaluation: labeled frames, the detection cache and per-row results stay

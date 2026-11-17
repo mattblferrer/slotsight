@@ -72,11 +72,16 @@ def slot_polygon(grey: np.ndarray, points: list[list[float]]) -> np.ndarray:
 
 
 def edge_density(edges: np.ndarray, polygon: np.ndarray) -> float:
-    """Share of edge pixels inside the slot."""
-    mask = np.zeros(edges.shape, np.uint8)
-    cv2.fillPoly(mask, [polygon], 255)
+    """Share of edge pixels inside the slot (masked within its bounding box only)."""
+    x, y, w, h = cv2.boundingRect(polygon)
+    x, y = max(0, x), max(0, y)
+    crop = edges[y : y + h, x : x + w]
+    if crop.size == 0:
+        return 0.0
+    mask = np.zeros(crop.shape, np.uint8)
+    cv2.fillPoly(mask, [polygon - np.array([x, y], dtype=polygon.dtype)], 255)
     inside = mask > 0
-    return float(edges[inside].mean() / 255) if inside.any() else 0.0
+    return float(crop[inside].mean() / 255) if inside.any() else 0.0
 
 
 def slot_patch(grey: np.ndarray, points: list[list[float]]) -> np.ndarray | None:
@@ -113,12 +118,13 @@ class EmptyReference:
         # Tied to the polygon: editing a slot's corners starts a fresh reference.
         return (str(slot["id"]), tuple(tuple(round(float(v), 3) for v in point) for point in slot["points"]))
 
-    def check(self, frame: np.ndarray, slots: list[dict[str, Any]], results: list[dict[str, Any]], threshold: float) -> list[dict[str, Any]]:
+    def check(self, frame: np.ndarray, slots: list[dict[str, Any]], results: list[dict[str, Any]], threshold: float, learn: bool = True) -> list[dict[str, Any]]:
         """Return results where vacant slots that don't look empty are unknown.
 
         `results` are single-frame statuses after the review threshold, in slot order.
         Adds `empty_diff` (the difference, or None) to every result and `reason` to
-        the ones changed. Learns from the detector's vacant readings with low edge density.
+        the ones changed. Learns from the detector's vacant readings with low edge
+        density, unless `learn` is False (re-checking a frame already seen).
         """
         if threshold <= 0:
             return [{**result, "empty_diff": None} for result in results]
@@ -141,6 +147,9 @@ class EmptyReference:
                     result["empty_diff"] = round(diff, 3)
                     if diff > threshold:
                         result.update(status="unknown", reason=REASON)
+                if not learn:
+                    checked.append(result)
+                    continue
                 # Learn from the detector's vacant reading if its edges look like an empty slot.
                 density = edge_density(edges, slot_polygon(grey, slot["points"]))
                 history = self._densities.setdefault(key, deque(maxlen=HISTORY))

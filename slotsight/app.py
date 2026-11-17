@@ -103,6 +103,11 @@ latest_frame_time_s: float | None = None
 latest_frame_captured_at: datetime | None = None
 latest_frame_processed_at: datetime | None = None
 latest_frame_model: str | None = None
+latest_frame_smooth = False  # the latest frame came from a video or live source
+# (slots, probabilities) the classifier gave for latest_frame, so re-classifying after
+# a threshold change doesn't run the classifier again.
+latest_frame_probabilities: tuple[list, list | None] | None = None
+_snapshot_probabilities: tuple[list, list | None] | None = None  # what the last snapshot used
 
 DEFAULT_SLOTS = [
     {"id": "A01", "points": [[12, 18], [27, 17], [29, 39], [13, 40]]},
@@ -280,6 +285,10 @@ def load_settings() -> dict[str, Any]:
 
 
 def save_settings(**updates: Any) -> dict[str, Any]:
+    """Write settings.txt with `updates`. Refuses (ConfigReadError) while an existing
+    file can't be read, so a typo or a lock never gets replaced by defaults."""
+    if SETTINGS_PATH.exists():
+        read_config(SETTINGS_PATH, dict)  # raises ConfigReadError if unreadable right now
     settings = load_settings()
     settings.update(updates)
     write_atomic(SETTINGS_PATH, json.dumps(settings, indent=2))
@@ -299,10 +308,12 @@ def ensure_history() -> None:
         if reader.fieldnames == HISTORY_COLUMNS:
             return
         rows = list(reader)
-    with HISTORY_PATH.open("w", newline="", encoding="utf-8") as file:
+    upgraded = HISTORY_PATH.with_name(f".{HISTORY_PATH.name}.upgrade.tmp")
+    with upgraded.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=HISTORY_COLUMNS, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+    os.replace(upgraded, HISTORY_PATH)  # readers see the old file or the new one, never half
 
 
 def append_history(
@@ -481,11 +492,16 @@ def classify_frame(frame, slots: list[dict[str, Any]], detections, overlap_thres
 
 
 def slot_probabilities(frame, slots: list[dict[str, Any]], settings: dict[str, Any] | None = None):
-    """The classifier's (P(vacant), P(occupied)) per slot, or None to use the detector alone."""
+    """The classifier's (P(vacant), P(occupied)) per slot, or None to use the detector alone.
+
+    Serialised with the detector by inference_lock (one model call at a time). Call it
+    outside state_lock; inside it only as a rare fallback.
+    """
     settings = settings or load_settings()
     if not settings["slot_classifier"]:
         return None
-    return slot_classifier.predict(frame, slots)
+    with inference_lock:
+        return slot_classifier.predict(frame, slots)
 
 
 def decide(frame, slots: list[dict[str, Any]], detections, settings: dict[str, Any], probabilities=None) -> list[dict[str, Any]]:
@@ -604,6 +620,7 @@ def snapshot(
     processed_at: datetime | None = None,
     smooth: bool = False,
     probabilities=None,
+    revise: bool = False,
 ) -> dict[str, Any]:
     """Build the dashboard payload.
 
@@ -615,6 +632,9 @@ def snapshot(
     if `record` is set, append the reading to the history. `updated_at` is when
     the frame was processed (`processed_at`, default now), so re-classifying an
     old frame after a settings change does not make it look newer (R-06).
+    `revise` re-classifies the latest frame of a video or live source (after a
+    threshold or layout change): the empty check runs without learning and the
+    tracker replaces its last reading, so the safeguards still apply (R-07).
     Without a frame: demo data only when no model is installed; while a model
     downloads or loads, and when it is broken, every slot is "unknown" (the error is
     in `model_status`). These readings are never recorded.
@@ -628,6 +648,10 @@ def snapshot(
     if frame is not None:
         if detections is None:
             detections = detect_vehicles(frame)
+        global _snapshot_probabilities
+        if probabilities is None and settings["slot_classifier"]:
+            probabilities = slot_probabilities(frame, slots, settings)  # rare fallback under state_lock
+        _snapshot_probabilities = (slots, probabilities)
         # The review threshold is applied inside decide() for frames.
         results = decide(frame, slots, detections, settings, probabilities)
         source = source or "latest frame"
@@ -646,8 +670,9 @@ def snapshot(
     if frame is not None:
         if smooth:
             # Frames of a video or live source: catch missed cars, then smooth.
-            results = empty_reference.check(frame, slots, results, settings["empty_check_threshold"])
-            results = tracker.update(results, captured_at or processed_at or datetime.now(timezone.utc))
+            at = captured_at or processed_at or datetime.now(timezone.utc)
+            results = empty_reference.check(frame, slots, results, settings["empty_check_threshold"], learn=not revise)
+            results = tracker.revise(results, at) if revise else tracker.update(results, at)
         else:
             results = unsmoothed(results)
     if record:
@@ -682,21 +707,32 @@ def snapshot(
     return response
 
 
-def reclassify_latest_frame() -> None:
-    """Re-run classification on the last uploaded frame after a settings or slot change.
+def reclassify_latest_frame(probabilities=None) -> None:
+    """Re-run classification on the last frame after a settings or slot change. Caller holds state_lock.
 
-    Reuses the cached detections, so no new inference runs and nothing is recorded.
+    Reuses the cached detections and, when the slots are unchanged, the cached
+    classifier output, so no inference runs; nothing is recorded. A new layout's
+    classifier output should be computed outside the lock and passed in. A frame from
+    a video or live source keeps its safeguards (empty check, smoothing).
     """
-    global latest_frame_snapshot
-    if latest_frame is not None:
-        latest_frame_snapshot = snapshot(
-            latest_frame,
-            latest_frame_source,
-            latest_frame_detections,
-            frame_time_s=latest_frame_time_s,
-            captured_at=latest_frame_captured_at,
-            processed_at=latest_frame_processed_at,
-        )
+    global latest_frame_snapshot, latest_frame_probabilities
+    if latest_frame is None:
+        return
+    slots = load_slots()
+    if probabilities is None and latest_frame_probabilities is not None and latest_frame_probabilities[0] == slots:
+        probabilities = latest_frame_probabilities[1]
+    latest_frame_snapshot = snapshot(
+        latest_frame,
+        latest_frame_source,
+        latest_frame_detections,
+        frame_time_s=latest_frame_time_s,
+        captured_at=latest_frame_captured_at,
+        processed_at=latest_frame_processed_at,
+        smooth=latest_frame_smooth,
+        revise=latest_frame_smooth,
+        probabilities=probabilities,
+    )
+    latest_frame_probabilities = _snapshot_probabilities
 
 
 def store_reading(
@@ -717,7 +753,9 @@ def store_reading(
     """
     global latest_frame_snapshot, latest_frame, latest_frame_detections, latest_frame_source
     global latest_frame_time_s, latest_frame_captured_at, latest_frame_processed_at, latest_frame_model
+    global latest_frame_smooth, latest_frame_probabilities
     latest_frame = frame
+    latest_frame_smooth = smooth
     latest_frame_model = model_status()["name"]
     latest_frame_detections = detections
     latest_frame_source = source
@@ -737,6 +775,7 @@ def store_reading(
         smooth=smooth,
         probabilities=probabilities,
     )
+    latest_frame_probabilities = _snapshot_probabilities
     return latest_frame_snapshot
 
 
@@ -753,7 +792,9 @@ def frame_handler(source_name: str, recorded_at: datetime | None = None):
         detections = detect_vehicles(frame)
         slots = load_slots()
         probabilities = slot_probabilities(frame, slots)  # outside state_lock, like detection
-        camera.observe(frame, slots)  # every Nth frame; outside state_lock
+        current = owner[0] if owner else None
+        if current is not None and not current.stopping and active_source is current:
+            camera.observe(frame, slots)  # every Nth frame; outside state_lock
         with state_lock:
             worker = owner[0] if owner else None
             if worker is None or worker.stopping or active_source is not worker:
@@ -783,6 +824,7 @@ def start_source(
             active_source.stop()
         tracker.reset()  # a new source starts a new sequence
         empty_reference.reset()  # and may show another view: learn the empty slots afresh
+        camera.forget_automatic_reference()  # a reference saved with the layout is kept
         handler = frame_handler(name, recorded_at)
         worker = SourceWorker(
             kind,
@@ -825,6 +867,11 @@ def current_payload() -> dict[str, Any]:
     with state_lock:
         payload = latest_frame_snapshot if latest_frame_snapshot is not None else snapshot()
     return {**payload, "model_status": model_status(), "camera": camera.status(), "job": source_status()}
+
+
+@app.errorhandler(ConfigReadError)
+def config_unreadable(error):
+    return jsonify({"error": f"{Path(str(error)).name} can't be read right now (open in another program, or a typo in it?). Nothing was saved."}), 409
 
 
 @app.errorhandler(413)
@@ -893,11 +940,16 @@ def config():
     use_classifier = payload.get("slot_classifier", settings["slot_classifier"])
     if not isinstance(use_classifier, bool):
         return jsonify({"error": "slot_classifier must be true or false."}), 400
+    frame_before = latest_frame
+    fresh = None
+    if frame_before is not None:  # the new layout's classifier output, computed outside state_lock
+        fresh = slot_probabilities(frame_before, slots, {**settings, "slot_classifier": use_classifier})
     with state_lock:
         layout_changed = slots != load_slots()
-        save_slots(slots)
+        # Settings first: if settings.txt can't be read, nothing is saved at all.
         save_settings(lot_name=lot_name.strip(), review_threshold=review_threshold, inference_size=size, slot_classifier=use_classifier)
-        reclassify_latest_frame()
+        save_slots(slots)
+        reclassify_latest_frame(fresh if latest_frame is frame_before else None)
         frame = latest_frame
     message = "Lot configuration saved."
     if layout_changed and frame is not None:
@@ -1070,18 +1122,21 @@ def select_model():
 def history_rows() -> list[list[str]]:
     """The history as rows in the current column order, header first. Read-only.
 
-    The file is copied under state_lock (so no append is half-written) and parsed
-    outside it. An older file with fewer columns gets blanks for the new ones.
+    Read without state_lock, so status polls and new frames never wait on a large
+    history; a row still being appended (no final newline yet) is left out. The format
+    upgrade replaces the file atomically. An older file with fewer columns gets blanks
+    for the new ones.
     """
-    with state_lock:
-        text = HISTORY_PATH.read_text(encoding="utf-8") if HISTORY_PATH.exists() else ""
+    text = HISTORY_PATH.read_text(encoding="utf-8") if HISTORY_PATH.exists() else ""
+    if text and not text.endswith("\n"):
+        text = text[: text.rfind("\n") + 1]  # drop a half-written last row
     rows = [HISTORY_COLUMNS]
     for record in csv.DictReader(io.StringIO(text)):
         rows.append([record.get(column) or "" for column in HISTORY_COLUMNS])
     return rows
 
 
-_trends_cache: dict[tuple, dict[str, Any]] = {}
+_trends_cache: tuple[tuple, dict[str, Any]] | None = None  # (key, result), replaced in one step
 
 
 @app.get("/api/trends")
@@ -1095,10 +1150,13 @@ def get_trends():
         key = (str(HISTORY_PATH), stat.st_size, stat.st_mtime_ns, range_key)
     except FileNotFoundError:
         key = (str(HISTORY_PATH), 0, 0, range_key)
-    if key not in _trends_cache:  # re-aggregate only when the history changed
-        _trends_cache.clear()
-        _trends_cache[key] = trends.summarize(history_rows(), range_key)
-    return jsonify(_trends_cache[key])
+    global _trends_cache
+    cached = _trends_cache  # read once: another request may replace it meanwhile
+    if cached is not None and cached[0] == key:
+        return jsonify(cached[1])
+    result = trends.summarize(history_rows(), range_key)  # re-aggregate only when the history changed
+    _trends_cache = (key, result)
+    return jsonify(result)
 
 
 @app.get("/label")

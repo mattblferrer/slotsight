@@ -59,9 +59,10 @@ def summarize(rows: list[list[str]], range_key: str = "24h", local_tz=None) -> d
     series_frames = [frame for frame in frames if frame["at"] > start]
 
     buckets: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for frame in series_frames:
-        buckets[int((frame["at"] - start) / bucket)].append(frame)
     count = int(span / bucket)
+    for frame in series_frames:
+        # The latest reading sits exactly at `end`: keep it in the last bucket.
+        buckets[min(count - 1, int((frame["at"] - start) / bucket))].append(frame)
     series = []
     for position in range(count):
         members = buckets.get(position, [])

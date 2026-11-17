@@ -20,6 +20,7 @@ come and go are outliers to RANSAC as long as the fixed scene dominates the view
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -56,7 +57,8 @@ def estimate_shift(reference: np.ndarray, frame: np.ndarray, slots: list[dict[st
     ref_grey, _ = _prepare(reference)
     cur_grey, _ = _prepare(frame)
     if ref_grey.shape != cur_grey.shape:
-        return {"state": "shifted", "shift_pct": None, "inliers": 0, "reason": "the frame size changed"}
+        # Another camera or resolution, not a moved camera: can't compare.
+        return {"state": "unverified", "shift_pct": None, "inliers": 0, "reason": "frame size differs from the reference"}
     orb = cv2.ORB_create(nfeatures=2000)
     ref_keys, ref_desc = orb.detectAndCompute(ref_grey, None)
     cur_keys, cur_desc = orb.detectAndCompute(cur_grey, None)
@@ -93,6 +95,11 @@ class CameraMonitor:
         self._frames = 0
         self._streak = 0
         self._status: dict[str, Any] = {"state": "no_reference"}
+        self._origin: str | None = None  # "layout" (saved with the layout) or "auto" (first frame)
+
+    @property
+    def _origin_path(self) -> Path:
+        return self.reference_path.with_suffix(".json")
 
     def _load_reference(self) -> np.ndarray | None:
         if not self._reference_loaded:
@@ -100,10 +107,28 @@ class CameraMonitor:
             if self.reference_path.exists():
                 data = np.fromfile(str(self.reference_path), dtype=np.uint8)
                 self._reference = cv2.imdecode(data, cv2.IMREAD_COLOR)
+                try:
+                    self._origin = json.loads(self._origin_path.read_text(encoding="utf-8")).get("origin")
+                except (OSError, ValueError):
+                    self._origin = "layout"  # older references were all saved with the layout
         return self._reference
 
-    def set_reference(self, frame: np.ndarray) -> None:
-        """Save `frame` as the reference (on a layout save) and clear any warning."""
+    def forget_automatic_reference(self) -> None:
+        """A new source starts: drop a reference that was only taken from another
+        source's first frame (one saved with the layout is kept)."""
+        with self._lock:
+            self._load_reference()
+            if self._origin != "auto":
+                return
+            self._reference, self._origin = None, None
+            self._frames, self._streak = 0, 0
+            self._status = {"state": "no_reference"}
+        self.reference_path.unlink(missing_ok=True)
+        self._origin_path.unlink(missing_ok=True)
+
+    def set_reference(self, frame: np.ndarray, origin: str = "layout") -> None:
+        """Save `frame` as the reference and clear any warning. `origin` is "layout"
+        (the frame the layout was saved on) or "auto" (a source's first frame)."""
         self.reference_path.parent.mkdir(parents=True, exist_ok=True)
         ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
         if not ok:
@@ -111,8 +136,9 @@ class CameraMonitor:
         temporary = self.reference_path.with_name(f".{self.reference_path.name}.tmp")
         encoded.tofile(str(temporary))
         temporary.replace(self.reference_path)
+        self._origin_path.write_text(json.dumps({"origin": origin, "set_at": _now()}), encoding="utf-8")
         with self._lock:
-            self._reference, self._reference_loaded = frame.copy(), True
+            self._reference, self._reference_loaded, self._origin = frame.copy(), True, origin
             self._frames, self._streak = 0, 0
             self._status = {"state": "ok", "shift_pct": 0.0, "reference_at": _now(), "checked_at": _now()}
 
@@ -135,7 +161,7 @@ class CameraMonitor:
                 if (self._frames - 1) % CHECK_EVERY:  # check frames 1, 1 + N, 1 + 2N, ...
                     return
         if reference is None:
-            self.set_reference(frame)
+            self.set_reference(frame, origin="auto")
             return
         started = time.perf_counter()
         try:

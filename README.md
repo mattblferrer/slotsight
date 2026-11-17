@@ -92,7 +92,7 @@ Two models look at every frame:
 
 A slot whose classifier confidence is below `review_threshold` shows as unknown. Without classifier weights, or with **Use the slot classifier** switched off in Configure slots, the detector decides alone: a slot is occupied when a detection overlaps it by at least `overlap_threshold` (the larger of the share of the slot covered by the box and the share of the box inside the slot).
 
-On PKLot (other lots, so proxy evidence only), this combination scored 97.6 % per-slot on camera views it was never trained on, against 52.7 % for the detector alone. See [`slotsight/docs/evaluation.md`](slotsight/docs/evaluation.md).
+On PKLot (other lots, so proxy evidence only), this combination scored 97.8 % per-slot on camera views it was never trained on, against 52.7 % for the detector alone. See [`slotsight/docs/evaluation.md`](slotsight/docs/evaluation.md).
 
 ## Configuration and data
 
@@ -101,7 +101,7 @@ All paths are under `slotsight/`:
 Your configuration stays on your machine: git ignores both config files, and the app recreates them from its defaults if they're missing.
 
 - `config/slots.json`: slot polygons, edited with **Configure slots** or **Edit layout**. Coordinates are normalised from 0 to 100, so a configuration works at any image size.
-- `config/settings.txt`: lot name, `review_threshold`, `overlap_threshold`, `sample_interval_s` (default 2 s), `inference_size` (640, 960 or 1280; default 640), `empty_check_threshold` (default 0.8; 0 = off), `slot_classifier` (default `true`) and `model` (default `ultralytics/yolo11s`).
+- `config/settings.txt` (if it can't be read, for example because of a typo, the app keeps working with the last good settings and refuses to save over it until it's fixed): lot name, `review_threshold`, `overlap_threshold`, `sample_interval_s` (default 2 s), `inference_size` (640, 960 or 1280; default 640), `empty_check_threshold` (default 0.8; 0 = off), `slot_classifier` (default `true`) and `model` (default `ultralytics/yolo11s`).
 - `data/occupancy_history.csv`: one row per slot for every processed frame (viewing the dashboard doesn't add rows). Columns: `timestamp, slot_id, status, confidence, source, frame_time_s, raw_status`. `status` is what the dashboard showed (smoothed for videos and live sources), `raw_status` is the single-frame result and `confidence` belongs to it, and `frame_time_s` is the frame's position in a video file. Older files gain the new column automatically. The dashboard offers CSV and Excel downloads. Older history files are kept beside it as `occupancy_history-<date>.csv`.
 - `models/`: downloaded detection models.
 
