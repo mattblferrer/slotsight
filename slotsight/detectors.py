@@ -116,8 +116,8 @@ MODELS: dict[str, ModelSpec] = {
             "RT-DETRv2 R18",
             "Apache-2.0",
             (
-                RemoteFile(f"{_RTDETR_REPO}/config.json", "huggingface/rtdetr_v2_r18vd/config.json", 5437),
-                RemoteFile(f"{_RTDETR_REPO}/preprocessor_config.json", "huggingface/rtdetr_v2_r18vd/preprocessor_config.json", 444),
+                RemoteFile(f"{_RTDETR_REPO}/config.json", "huggingface/rtdetr_v2_r18vd/config.json", 5437, "ed051ec77cb41c5d9d5e3af21a979b1e890599dfd68434d7636ff82ded4c1527"),
+                RemoteFile(f"{_RTDETR_REPO}/preprocessor_config.json", "huggingface/rtdetr_v2_r18vd/preprocessor_config.json", 444, "cd38cd59999e7a95d68e487fbe5132df3d4e5c32a0836add57e6126ba0c4eaf1"),
                 RemoteFile(
                     f"{_RTDETR_REPO}/model.safetensors",
                     "huggingface/rtdetr_v2_r18vd/model.safetensors",

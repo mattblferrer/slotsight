@@ -39,6 +39,7 @@ Only `README.md`, `.gitignore` and this `.claude/` folder sit at the top level. 
 - `slotsight/scripts/measure_update_interval.py`: the R-04 timing test
 - `slotsight/scripts/models.py`: `list`, `install <id>`, `use <id>` for detection models
 - `slotsight/eval/evaluate.py`: the accuracy harness (R-01, R-02, R-05, R-07). Labels live in `slotsight/eval/labels.csv` (tracked). Frames go in `slotsight/data/eval_frames/`, and the detection cache and per-row results are `data/eval_cache.json` and `data/eval_predictions.csv`. All three are gitignored.
+- `slotsight/tests/`: the pytest suite (`conftest.py` has the `app`, `fake_detector`, `two_slots` and `client` fixtures; every test uses temporary config/data/models folders). `slotsight/requirements-dev.txt` adds pytest.
 - `slotsight/docs/`: `requirements.md`, `PLAN.md`, `evaluation.md`
 
 API:
@@ -79,6 +80,6 @@ The local `.venv` already has Flask, OpenCV, numpy, openpyxl, ultralytics, trans
 
 ## Verification
 
-- There is no test suite yet (adding a pytest suite is planned). Until then, check changes with the Flask test client against temporary config copies. At minimum, cover: a blank frame gives all vacant, `GET /api/status` doesn't grow the history, and video input logs one set of rows per sampled frame.
+- Run `python -m pytest slotsight/tests` from the repository root after every change (about 10 s, no network). Add or update tests with each change, using the `app` and `fake_detector` fixtures, never the user's real files or downloads. The suite already covers: a blank frame gives all vacant, status polls never grow the history, and video input logs one set of rows per sampled frame. Keep those passing.
 - For UI changes, run the app and check the map, the activity list, the source panel and the exports in a browser.
 - Accuracy claims (R-01, R-02, R-05, R-07) need a run of `slotsight/eval/evaluate.py` on labeled lot frames. Timing claims (R-04) need a run of `slotsight/scripts/measure_update_interval.py`.

@@ -50,6 +50,7 @@ slotsight/
   models/                  downloaded detection models (gitignored); README lists licences
   static/, templates/      dashboard UI
   scripts/                 model installer (models.py) and the R-04 timing test
+  tests/                   pytest suite (python -m pytest slotsight/tests)
   eval/                    accuracy evaluation: evaluate.py and labels.csv
   docs/                    requirements.md, PLAN.md, evaluation.md
 ```
@@ -81,6 +82,15 @@ Your configuration stays on your machine: git ignores both config files, and the
 On the dashboard map, each slot is filled green (available), red (occupied) or yellow with a dashed edge (unknown), with a pinned label showing its ID and a status symbol (○ ● ?). The time of the last update is in the map's corner, and hovering over or tabbing to a slot shows its status, confidence and update time.
 
 The dashboard polls every 2 s. With 2 s sampling, a change reaches the screen within about 4 s (see [`slotsight/docs/evaluation.md`](slotsight/docs/evaluation.md)).
+
+## Running the tests
+
+```powershell
+pip install -r slotsight/requirements-dev.txt
+python -m pytest slotsight/tests
+```
+
+The suite takes about 10 seconds and needs no network. It uses a fake detector and temporary folders, so it never touches your config, history or models. One test runs the real default model on a sample image, and is skipped if that model isn't installed.
 
 ## Measuring update speed
 
