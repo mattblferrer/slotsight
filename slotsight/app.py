@@ -649,7 +649,11 @@ def snapshot(
         if detections is None:
             detections = detect_vehicles(frame)
         global _snapshot_probabilities
-        if probabilities is None and settings["slot_classifier"]:
+        if not settings["slot_classifier"]:
+            # Switched off: output computed before the switch (a frame in flight, the
+            # cache) must not decide. The setting is read under state_lock, here.
+            probabilities = None
+        elif probabilities is None:
             probabilities = slot_probabilities(frame, slots, settings)  # rare fallback under state_lock
         _snapshot_probabilities = (slots, probabilities)
         # The review threshold is applied inside decide() for frames.
@@ -719,9 +723,8 @@ def reclassify_latest_frame(probabilities=None) -> None:
     if latest_frame is None:
         return
     slots = load_slots()
-    if not load_settings()["slot_classifier"]:
-        probabilities = None  # switched off: the cached classifier output must not decide
-    elif probabilities is None and latest_frame_probabilities is not None and latest_frame_probabilities[0] == slots:
+    # snapshot() ignores classifier output while the classifier is switched off.
+    if probabilities is None and latest_frame_probabilities is not None and latest_frame_probabilities[0] == slots:
         probabilities = latest_frame_probabilities[1]
     latest_frame_snapshot = snapshot(
         latest_frame,
@@ -961,20 +964,19 @@ def config():
     problem = slot_config_problem(slots)
     if problem:
         return jsonify({"error": problem}), 400
-    settings = {**load_settings(), **updates}
-    lot_name, review_threshold = settings["lot_name"], settings["review_threshold"]
-    size, use_classifier = settings["inference_size"], settings["slot_classifier"]
     frame_before = latest_frame
     fresh = None
     if frame_before is not None:  # the new layout's classifier output, computed outside state_lock
-        fresh = slot_probabilities(frame_before, slots, {**settings, "slot_classifier": use_classifier})
+        fresh = slot_probabilities(frame_before, slots, {**load_settings(), **updates})
     with state_lock:
         layout_changed = slots != load_slots()
-        # Settings first: if settings.txt can't be read, nothing is saved at all.
-        save_settings(lot_name=lot_name, review_threshold=review_threshold, inference_size=size, slot_classifier=use_classifier)
+        # Settings first: if settings.txt can't be read, nothing is saved at all. Only the
+        # settings sent are written, so one saved meanwhile (Settings dialog) is kept.
+        settings = save_settings(**updates)
         save_slots(slots)
         reclassify_latest_frame(fresh if latest_frame is frame_before else None)
         frame = latest_frame
+    lot_name, review_threshold, size = settings["lot_name"], settings["review_threshold"], settings["inference_size"]
     message = "Lot configuration saved."
     if layout_changed and frame is not None:
         # The layout was drawn on this frame: it becomes the camera-shift reference.
@@ -996,14 +998,18 @@ def update_settings():
     if not updates:
         return jsonify({"error": f"Provide one of: {', '.join(DIALOG_SETTINGS)}."}), 400
     frame_before = latest_frame
+    slots_before = load_slots()
     fresh = None
     if updates.get("slot_classifier") and frame_before is not None:
         # Switching the classifier on: its output for the latest frame, computed outside state_lock.
-        fresh = slot_probabilities(frame_before, load_slots(), {**load_settings(), "slot_classifier": True})
+        fresh = slot_probabilities(frame_before, slots_before, {**load_settings(), "slot_classifier": True})
     with state_lock:
         save_settings(**updates)
-        reclassify_latest_frame(fresh if latest_frame is frame_before else None)
-        return jsonify(latest_frame_snapshot if latest_frame_snapshot is not None else snapshot())
+        if latest_frame is not frame_before or load_slots() != slots_before:
+            fresh = None  # a new frame or layout meanwhile: classify again under the lock
+        reclassify_latest_frame(fresh)
+    # The whole status payload, so the page doesn't lose the camera warning or the job.
+    return jsonify(current_payload())
 
 
 @app.post("/api/review-threshold")
@@ -1019,7 +1025,7 @@ def review_threshold():
     with state_lock:
         save_settings(review_threshold=threshold)
         reclassify_latest_frame()
-        return jsonify(latest_frame_snapshot if latest_frame_snapshot is not None else snapshot())
+    return jsonify(current_payload())
 
 
 def is_readable_video(path: str) -> bool:
@@ -1059,8 +1065,8 @@ def process():
     with state_lock:
         if load_slots() != slots:
             probabilities = None
-        payload = store_reading(frame, uploaded.filename, detections, captured_at=recorded_at, probabilities=probabilities)
-    return jsonify({**payload, "job": source_status()})
+        store_reading(frame, uploaded.filename, detections, captured_at=recorded_at, probabilities=probabilities)
+    return jsonify(current_payload())
 
 
 def read_image(path: str):

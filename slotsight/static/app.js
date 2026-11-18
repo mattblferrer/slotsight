@@ -271,6 +271,15 @@ function liveState() {
     if (quiet > staleAfterS(job)) return { tone: "warn", text: `No new reading for ${quiet} s`, stale: true };
     return { tone: "live", text: job.kind === "file" ? "Processing video" : "Live" };
   }
+  // A live camera or stream that was disconnected or failed: the reading it left is
+  // old, so it is shown as stale. A finished video keeps its last reading undimmed:
+  // that is the end of the footage that was checked. Only when the reading on screen
+  // came from that source (an image checked afterwards is current).
+  if (job && job.kind !== "file" && ["stopped", "error"].includes(job.state) && data.source === job.name) {
+    return job.state === "error"
+      ? { tone: "error", text: "Camera lost", stale: true }
+      : { tone: "idle", text: "Camera disconnected", stale: true };
+  }
   return { tone: "idle", text: `Last reading ${timeOnly(data.updated_at)}` };
 }
 
@@ -286,8 +295,10 @@ function renderLiveState() {
   $("lotMap").classList.toggle("is-stale", Boolean(live.stale));
   // The sign's LED only glows for a current, real reading: never for demo data,
   // no frame, a model error, a stale source or a lost connection.
+  // Nor while polling is paused (Auto refresh off, Edit layout): nothing keeps it current.
   const source = state.lastData?.source;
-  const current = !live.stale && !state.offline && source && !["demo", "none", "model error"].includes(source);
+  const polling = $("autoRefresh").checked && !state.editing;
+  const current = polling && !live.stale && !state.offline && source && !["demo", "none", "model error"].includes(source);
   $("stats").classList.toggle("is-dimmed", !current);
   renderMapStamp(state.lastData, live.stale ? live.text : "");
 }
@@ -431,7 +442,7 @@ function render(data) {
   document.title = `${state.lotName} · SlotSight`;
   const changed = renderMap(data);
   renderActivity(data, changed);
-  renderCamera(data);
+  if ("camera" in data) renderCamera(data); // a payload without it must not clear the warning
   if ("job" in data) renderJob(data.job);
   // The frame is a large data URL: only hand it to the image when it changes.
   if (data.preview_image && data.preview_image !== state.previewSrc) {
@@ -598,6 +609,11 @@ function restoreLayout(layout) {
 }
 
 function undoLayout() {
+  // Mid-gesture, Undo takes back the gesture itself; the layout under it stays.
+  if (editor.drag || editor.drawing) {
+    cancelGesture();
+    return;
+  }
   const previous = editor.undo.pop();
   if (!previous) return;
   hideToast();
@@ -942,7 +958,7 @@ document.addEventListener("keydown", (event) => {
     if (editor.drag || editor.drawing) cancelGesture();
     else cancelEditing();
   } else if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "z") {
-    if (event.target.closest("input, textarea, select")) return;
+    if (event.target.closest?.("input, textarea, select")) return;
     event.preventDefault();
     undoLayout();
   }
@@ -1164,7 +1180,7 @@ async function loadModels() {
 // One rule for the whole dialog: each control is saved as soon as it changes
 // (POST /api/settings, which never touches the slot layout). The polygon JSON is
 // text that has to be valid first, so it has its own Apply button.
-const settingsForm = { saved: {}, statusTimer: null, thresholdTimer: null, seq: 0 };
+const settingsForm = { saved: {}, statusTimer: null, thresholdTimer: null, seq: 0, queue: Promise.resolve() };
 
 function settingsStatus(text, isError = false) {
   const status = $("settingsStatus");
@@ -1192,10 +1208,16 @@ function showSettings(data) {
 }
 
 // Save one or more settings. On failure the control goes back to the saved value
-// (the lot name keeps what was typed, so it can be corrected).
-async function saveSettings(updates, revert) {
+// (the lot name keeps what was typed, so it can be corrected). Saves are queued, so
+// the server applies them, and the page renders their answers, in the order made.
+function saveSettings(updates, revert) {
   const seq = ++settingsForm.seq;
   settingsStatus("Saving...");
+  settingsForm.queue = settingsForm.queue.then(() => sendSettings(updates, revert, seq));
+  return settingsForm.queue;
+}
+
+async function sendSettings(updates, revert, seq) {
   try {
     const response = await fetch("/api/settings", {
       method: "POST",
@@ -1223,12 +1245,12 @@ $("openSettings").addEventListener("click", async () => {
   }
   if (!data) return;
   showSettings(data);
-  const slots = data.slots.map((item, index) => ({
-    id: item.id,
-    points: state.slotConfig?.[index]?.points || item.points,
-  }));
+  // The saved layout, each id with its own points (never the unsaved edit's).
+  const slots = data.slots.map((item) => ({ id: item.id, points: item.points }));
   $("configInput").value = JSON.stringify(slots, null, 2);
-  $("jsonMessage").textContent = "";
+  $("applyJson").disabled = state.editing;
+  $("jsonMessage").classList.remove("is-error");
+  $("jsonMessage").textContent = state.editing ? "Save or cancel Edit layout first; it has unsaved changes." : "";
   $("modelMessage").textContent = "";
   settingsStatus("");
   // When the model needs attention, open its section straight away.
@@ -1239,13 +1261,20 @@ $("openSettings").addEventListener("click", async () => {
 });
 
 // Appearance: System, Light or Dark (theme.js applies it and keeps it in this browser).
+// The theme is cosmetic: if theme.js didn't load, the control is hidden and the
+// dashboard runs on in the light theme.
+const theme = window.slotsightTheme;
 const themeButtons = $("themeChoice").querySelectorAll("[data-theme-choice]");
 function showThemeChoice(choice) {
   themeButtons.forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.themeChoice === choice)));
 }
-themeButtons.forEach((button) => button.addEventListener("click", () => window.slotsightTheme.set(button.dataset.themeChoice)));
-window.slotsightTheme.onChange(showThemeChoice);
-showThemeChoice(window.slotsightTheme.choice());
+if (theme) {
+  themeButtons.forEach((button) => button.addEventListener("click", () => theme.set(button.dataset.themeChoice)));
+  theme.onChange(showThemeChoice);
+  showThemeChoice(theme.choice());
+} else {
+  $("themeChoice").closest(".appearance").hidden = true;
+}
 
 $("closeSettings").addEventListener("click", () => $("settingsDialog").close());
 $("doneSettings").addEventListener("click", () => $("settingsDialog").close());
@@ -1268,27 +1297,26 @@ $("reviewThresholdInput").addEventListener("input", (event) => {
   clearTimeout(settingsForm.thresholdTimer);
   const threshold = Number(event.target.value) / 100;
   settingsForm.thresholdTimer = setTimeout(() => {
-    const previous = settingsForm.saved.review_threshold;
+    // A revert reads the saved value when it fails, after any earlier queued save.
     saveSettings({ review_threshold: threshold }, () => {
-      $("reviewThresholdInput").value = Math.round(previous * 100);
+      $("reviewThresholdInput").value = Math.round(settingsForm.saved.review_threshold * 100);
       $("reviewThresholdValue").textContent = `${$("reviewThresholdInput").value}%`;
     });
   }, 180);
 });
 
 $("classifierInput").addEventListener("change", (event) => {
-  const previous = settingsForm.saved.slot_classifier;
-  saveSettings({ slot_classifier: event.target.checked }, () => (event.target.checked = previous));
+  saveSettings({ slot_classifier: event.target.checked }, () => (event.target.checked = settingsForm.saved.slot_classifier));
 });
 
 $("inferenceSizeInput").addEventListener("change", (event) => {
-  const previous = settingsForm.saved.inference_size;
-  saveSettings({ inference_size: Number(event.target.value) }, () => (event.target.value = String(previous)));
+  saveSettings({ inference_size: Number(event.target.value) }, () => (event.target.value = String(settingsForm.saved.inference_size)));
 });
 
 $("applyJson").addEventListener("click", async () => {
   const message = $("jsonMessage");
   message.classList.remove("is-error");
+  if (state.editing) return; // the open edit would be out of step with a new layout
   let slots;
   try {
     slots = JSON.parse($("configInput").value);

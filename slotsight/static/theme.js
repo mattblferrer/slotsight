@@ -32,7 +32,9 @@
   }
 
   apply(stored(), false);
-  systemDark.addEventListener("change", () => apply(stored(), true));
+  const onSystemChange = () => apply(stored(), true);
+  if (systemDark.addEventListener) systemDark.addEventListener("change", onSystemChange);
+  else if (systemDark.addListener) systemDark.addListener(onSystemChange); // Safari before 14
   // Another tab (the dashboard or the label page) changed the choice.
   window.addEventListener("storage", (event) => {
     if (event.key === KEY) apply(stored(), true);
