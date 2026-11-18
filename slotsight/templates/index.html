@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
     <title>SlotSight</title>
+    <script src="{{ url_for('static', filename='first-visit.js', v='1') }}"></script>
     <script src="{{ url_for('static', filename='theme.js', v='2') }}"></script>
     <link
       rel="preload"
@@ -15,7 +16,7 @@
     />
     <link
       rel="stylesheet"
-      href="{{ url_for('static', filename='style.css', v='13') }}"
+      href="{{ url_for('static', filename='style.css', v='14') }}"
     />
   </head>
   <body>
@@ -39,6 +40,7 @@
       >
         &#8635;
       </button>
+      <a class="button button-secondary button-sm" href="/guide">Guide</a>
       <button class="button button-secondary button-sm" id="openSettings" type="button">
         Settings
       </button>

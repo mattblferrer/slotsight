@@ -39,6 +39,7 @@ Only `README.md`, `.gitignore` and this `.claude/` folder sit at the top level. 
 - `slotsight/sources.py`: `SourceWorker`, which reads video files, streams and cameras on a background thread and samples one frame per `sample_interval_s`
 - `slotsight/static/app.js`: dashboard logic (2 s polling, map rendering, slot polygon editor, config dialog, uploads, live-source controls, job progress)
 - `slotsight/static/style.css`, `slotsight/templates/index.html`: the UI (the "garage wayfinding sign" design: the sign with the LED free count leads; sign blue only on the sign, brand mark and primary button)
+- `slotsight/templates/guide.html`, `slotsight/static/guide.js`: the guide at `/guide` (setup steps, reading the dashboard, shortcuts, limits) with a read-only live sign; `static/first-visit.js` (in the dashboard's `<head>`) opens it once per browser. Keep its wording in step with the dashboard and with what is measured (no accuracy claims before R-01/R-02/R-05 evidence)
 - `slotsight/static/theme.js`: applies the viewer's theme (System, Light, Dark; kept in `localStorage`) before the page is drawn; loaded in `<head>` of both pages
 - `slotsight/static/fonts/`: self-hosted Overpass and Overpass Mono (SIL OFL, licences and source in its `README.md`). Never load fonts or scripts from another site
 - `slotsight/config/slots.json`: slot polygons, with coordinates **normalised 0–100** relative to frame width and height. Gitignored; created from `DEFAULT_SLOTS` on first run.
@@ -60,6 +61,7 @@ API:
 - `POST /api/source` (`target`, `realtime`, `recorded_at`), `POST /api/source/stop`, `GET /api/source`
 - `POST /api/config` (`slots`, plus any settings), `POST /api/settings` (any of `lot_name`, `review_threshold`, `inference_size`, `slot_classifier`; never the layout; the Settings dialog saves each control through it), `POST /api/review-threshold`
 - `GET /api/models` (catalogue, active id, running job), `POST /api/models/install` (`id`; 202, background download), `POST /api/models/select` (`id`; must be installed; saves `model` and loads in the background)
+- `GET /guide` (guide page)
 - `GET /label` (labeling page), `GET /api/label/frames`, `GET /api/label/image?frame=`, `GET /api/label/frame?frame=`, `POST /api/label/frame` (`frame`, `condition`, `slots`)
 - `GET /api/history.csv`, `GET /api/history.xlsx`, `GET /api/trends?range=24h|7d` (read-only, cached by history size and modification time)
 - `GET /api/status` also carries `camera` (camera-check state) and, per slot, `raw_status`, `changed_at` and `changed_since_start`

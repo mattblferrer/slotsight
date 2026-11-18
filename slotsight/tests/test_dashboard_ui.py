@@ -10,6 +10,8 @@ INDEX = (SLOTSIGHT_DIR / "templates" / "index.html").read_text(encoding="utf-8")
 APP_JS = (SLOTSIGHT_DIR / "static" / "app.js").read_text(encoding="utf-8")
 STYLE = (SLOTSIGHT_DIR / "static" / "style.css").read_text(encoding="utf-8")
 LABEL = (SLOTSIGHT_DIR / "templates" / "label.html").read_text(encoding="utf-8")
+GUIDE = (SLOTSIGHT_DIR / "templates" / "guide.html").read_text(encoding="utf-8")
+GUIDE_JS = (SLOTSIGHT_DIR / "static" / "guide.js").read_text(encoding="utf-8")
 
 
 def test_every_element_the_script_looks_up_exists_in_the_page():
@@ -87,3 +89,34 @@ def test_fonts_are_self_hosted_with_their_licences():
         assert f'url("fonts/{name}")' in STYLE
     for name in ("OVERPASS-LICENSE", "OVERPASS-MONO-LICENSE"):
         assert "SIL Open Font License" in (fonts / name).read_text(encoding="utf-8")
+
+
+# --- The guide (/guide) --------------------------------------------------------------
+
+
+def test_every_element_the_guide_script_looks_up_exists_in_the_guide():
+    used = set(re.findall(r'\$\("([A-Za-z][\w-]*)"\)', GUIDE_JS))
+    defined = set(re.findall(r'\bid="([^"]+)"', GUIDE))
+    assert used, "the id pattern no longer matches guide.js"
+    assert used <= defined, f"missing in guide.html: {sorted(used - defined)}"
+
+
+def test_the_guide_opens_once_without_a_loop():
+    # The dashboard sends a first visit to the guide before it is drawn...
+    head = INDEX.split("</head>")[0]
+    assert head.index("first-visit.js") < head.index("style.css")
+    assert 'href="/guide"' in INDEX
+    # ...and the guide never redirects, so "Open the dashboard" can't bounce back.
+    assert "first-visit.js" not in GUIDE and 'href="/"' in GUIDE
+    head = GUIDE.split("</head>")[0]
+    assert head.index("theme.js") < head.index("style.css")
+    assert "fonts.googleapis" not in GUIDE
+
+
+def test_the_guide_page_is_served_and_writes_nothing(client, app):
+    rows_before = app.HISTORY_PATH.read_text(encoding="utf-8") if app.HISTORY_PATH.exists() else None
+    response = client.get("/guide")
+    assert response.status_code == 200
+    assert b"How to use SlotSight" in response.data
+    after = app.HISTORY_PATH.read_text(encoding="utf-8") if app.HISTORY_PATH.exists() else None
+    assert after == rows_before

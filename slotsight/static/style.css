@@ -2112,3 +2112,279 @@ dialog::backdrop {
     grid-template-columns: 1fr;
   }
 }
+
+/* --- Guide page (/guide) -----------------------------------------------------------
+   The dashboard's sign, smaller and read-only, then plain reading text beside a
+   contents list that stays in view. Lines stay under about 70 characters. */
+.guide-open {
+  margin-left: auto;
+}
+.guide-head {
+  margin: 1.5rem 0 1.25rem;
+}
+.guide-lead {
+  max-width: 40em;
+  margin: 0.75rem 0 0;
+  font-size: 1.1875rem;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.guide-welcome {
+  max-width: 40em;
+  margin: 1rem 0 0;
+  padding: 0.75rem 1rem 0.625rem;
+  border-left: 4px solid var(--sign);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--selected);
+  font-size: var(--text-sm);
+}
+.guide-figure {
+  margin: 0;
+}
+.guide-figure figcaption {
+  max-width: 44em;
+  margin-top: 0.75rem;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+.sign-name {
+  margin: 0;
+  color: #ffffff;
+  font-size: clamp(1.75rem, 1.2rem + 1.8vw, 2.5rem);
+  line-height: 1.05;
+  font-weight: 800;
+  letter-spacing: -0.015em;
+  overflow-wrap: anywhere;
+}
+.guide-figure .sign-p {
+  width: 4.5rem;
+  height: 4.5rem;
+  font-size: 3.5rem;
+  padding-top: 0.375rem;
+}
+.guide-figure .sign-led strong {
+  font-size: clamp(3.75rem, 2.8rem + 2.6vw, 5.5rem);
+}
+.guide-body {
+  display: grid;
+  grid-template-columns: 13rem minmax(0, 1fr);
+  gap: 3rem;
+  margin-top: 3rem;
+}
+.guide-toc {
+  position: sticky;
+  top: 5rem;
+  align-self: start;
+}
+.guide-toc h2 {
+  margin: 0 0 0.5rem;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--muted);
+}
+.guide-toc ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-left: 2px solid var(--line);
+}
+.guide-toc a {
+  display: block;
+  padding: 0.4375rem 0 0.3125rem 0.875rem;
+  margin-left: -2px;
+  border-left: 2px solid transparent;
+  color: var(--ink);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-decoration: none;
+}
+.guide-toc a:hover {
+  border-left-color: var(--sign);
+  color: var(--accent-strong);
+}
+.guide-content {
+  max-width: 44rem;
+  min-width: 0;
+}
+.guide-content section {
+  scroll-margin-top: 5rem;
+}
+.guide-content section + section {
+  margin-top: 3rem;
+  padding-top: 1.75rem;
+  border-top: 2px solid var(--ink);
+}
+.guide-content h2 {
+  margin: 0 0 0.75rem;
+  font-size: var(--text-h2);
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  font-weight: 800;
+}
+.guide-content h3 {
+  margin: 1.75rem 0 0.5rem;
+  font-size: 1.1875rem;
+  font-weight: 800;
+}
+.guide-content p,
+.guide-content li,
+.guide-content dd {
+  line-height: 1.65;
+}
+.guide-content code {
+  padding: 0.0625rem 0.3125rem;
+  border-radius: 4px;
+  background: var(--sunken);
+  overflow-wrap: anywhere;
+}
+.guide-content a:not(.button) {
+  color: var(--ink);
+  font-weight: 700;
+}
+/* Setup steps: a real sequence, numbered like sign plates. */
+.guide-steps {
+  margin: 1.25rem 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+}
+.guide-steps > li {
+  position: relative;
+  padding: 0 0 1.5rem 3.5rem;
+  counter-increment: step;
+}
+.guide-steps > li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding-top: 0.1875rem;
+  border-radius: 7px;
+  background: var(--sign);
+  color: #ffffff;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.guide-steps > li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: calc(1.125rem - 1px);
+  top: 2.75rem;
+  bottom: 0.5rem;
+  width: 2px;
+  background: var(--line);
+}
+.guide-steps h3 {
+  margin: 0.25rem 0 0.25rem;
+}
+.guide-steps p {
+  margin: 0 0 0.5rem;
+}
+.guide-steps-compact > li {
+  padding-bottom: 0.75rem;
+}
+.guide-steps-compact > li p {
+  padding-top: 0.375rem;
+}
+.guide-note {
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+.guide-legend,
+.guide-states {
+  margin: 0.75rem 0 1rem;
+}
+.guide-legend > div,
+.guide-states > div {
+  display: grid;
+  grid-template-columns: 12rem minmax(0, 1fr);
+  gap: 0.25rem 1.25rem;
+  padding: 0.75rem 0 0.625rem;
+  border-bottom: 1px solid var(--line);
+}
+.guide-legend dt,
+.guide-states dt {
+  display: flex;
+  align-items: baseline;
+  gap: 0.625rem;
+  font-weight: 700;
+}
+.guide-legend dd,
+.guide-states dd {
+  margin: 0;
+  color: var(--muted);
+}
+.guide-list {
+  margin: 0.75rem 0 0;
+  padding-left: 1.25rem;
+}
+.guide-list li + li {
+  margin-top: 0.625rem;
+}
+.guide-keys {
+  width: 100%;
+  margin: 1rem 0 1.5rem;
+  border-collapse: collapse;
+}
+.guide-keys caption {
+  padding-bottom: 0.5rem;
+  text-align: left;
+  font-weight: 700;
+}
+.guide-keys th,
+.guide-keys td {
+  padding: 0.625rem 0 0.5rem;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.guide-keys th {
+  width: 11rem;
+  padding-right: 1rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.guide-keys td {
+  color: var(--muted);
+}
+.guide kbd {
+  display: inline-block;
+  min-width: 1.75rem;
+  padding: 0.1875rem 0.375rem 0.0625rem;
+  border: 2px solid var(--line-control);
+  border-bottom-width: 3px;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-align: center;
+}
+@media (max-width: 900px) {
+  .guide-body {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+  .guide-toc {
+    position: static;
+  }
+}
+@media (max-width: 640px) {
+  .guide-legend > div,
+  .guide-states > div {
+    grid-template-columns: 1fr;
+  }
+  .guide-keys th {
+    width: auto;
+    white-space: normal;
+  }
+  .guide-figure .sign-p {
+    width: 3.75rem;
+    height: 3.75rem;
+    font-size: 2.875rem;
+  }
+}

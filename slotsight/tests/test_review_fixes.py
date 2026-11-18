@@ -203,7 +203,7 @@ def test_the_upload_limit_is_configured():
 # --- 9. No raw HTML from data in the dashboard --------------------------------------------------------------
 
 
-@pytest.mark.parametrize("script", ["app.js", "label.js"])
+@pytest.mark.parametrize("script", ["app.js", "label.js", "guide.js", "first-visit.js", "theme.js"])
 def test_dashboard_scripts_never_use_innerHTML(script):
     assert "innerHTML" not in (SLOTSIGHT_DIR / "static" / script).read_text(encoding="utf-8")
 

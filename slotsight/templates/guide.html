@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Guide · SlotSight</title>
+    <script src="{{ url_for('static', filename='theme.js', v='2') }}"></script>
+    <link
+      rel="preload"
+      href="{{ url_for('static', filename='fonts/overpass.woff2') }}"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='14') }}" />
+  </head>
+  <body>
+    <header class="topbar" id="topbar">
+      <a class="brand" href="/"
+        ><span class="brand-mark" aria-hidden="true">S</span><span>SlotSight</span></a
+      >
+      <a class="button button-primary button-sm guide-open" href="/">Open the dashboard</a>
+    </header>
+
+    <main class="shell guide">
+      <section class="page-head guide-head">
+        <div>
+          <h1>How to use SlotSight</h1>
+          <p class="guide-lead">
+            SlotSight watches one parking lot through one camera and shows which
+            bays are free, which are taken and which it can't tell. This page
+            explains what you see on the dashboard and how to set it up for your
+            lot.
+          </p>
+          <p class="guide-welcome" id="guideWelcome" hidden>
+            This guide opens once, the first time you use SlotSight in this
+            browser. Find it again under Guide in the dashboard's top bar.
+          </p>
+        </div>
+      </section>
+
+      <!-- The real sign, read-only: the explanation below points at what is on it now. -->
+      <figure class="guide-figure">
+        <section class="sign" id="guideSign" aria-label="Spaces now">
+          <div class="sign-face">
+            <div class="sign-lot">
+              <span class="sign-p" aria-hidden="true">P</span>
+              <div class="sign-text">
+                <p class="sign-name" id="gLotName">Lot</p>
+                <p class="sign-counts">
+                  <span><i class="sign-key key-taken"></i><span id="gTaken">--</span> taken</span
+                  ><span><i class="sign-key key-unsure"></i><span id="gUnsure">--</span> not sure</span
+                  ><span class="sign-total"><span id="gTotal">--</span> bays watched</span>
+                </p>
+              </div>
+            </div>
+            <p class="sign-led">
+              <strong id="gFree">--</strong
+              ><span class="sign-led-label"
+                ><span id="gFreeUnit">spaces</span
+                ><small>free of <span id="gLedTotal">--</span></small></span
+              >
+            </p>
+          </div>
+          <p class="sign-foot">
+            <span class="health-pill" id="gStatus">Connecting...</span>
+          </p>
+        </section>
+        <figcaption>
+          Your lot right now, as the dashboard shows it. The green number is lit
+          only while it is a current reading; otherwise it turns grey and the
+          line below says why.
+        </figcaption>
+      </figure>
+
+      <div class="guide-body">
+        <nav class="guide-toc" aria-labelledby="tocTitle">
+          <h2 id="tocTitle">On this page</h2>
+          <ul>
+            <li><a href="#start">Set up your lot</a></li>
+            <li><a href="#reading">Read the dashboard</a></li>
+            <li><a href="#everyday">Everyday use</a></li>
+            <li><a href="#accuracy">Check the accuracy</a></li>
+            <li><a href="#keys">Keyboard shortcuts</a></li>
+            <li><a href="#limits">Good to know</a></li>
+          </ul>
+        </nav>
+
+        <div class="guide-content">
+          <section id="start" aria-labelledby="startTitle">
+            <h2 id="startTitle">Set up your lot</h2>
+            <p>Five steps, in this order. Each one is on the dashboard.</p>
+            <ol class="guide-steps">
+              <li>
+                <h3>Install a detection model</h3>
+                <p>
+                  SlotSight downloads its default model the first time it runs.
+                  Until a model is ready the dashboard shows demo data and says
+                  so. To choose another model, open <strong>Settings</strong>, then
+                  <strong>Detection model and resolution</strong>, and press
+                  <strong>Install</strong>, then <strong>Use</strong>.
+                </p>
+              </li>
+              <li>
+                <h3>Check a photo from your camera</h3>
+                <p>
+                  Under <strong>Camera and footage</strong>, drop a photo taken
+                  from your camera's position (or choose one) and press
+                  <strong>Check this file</strong>. The photo appears on the map
+                  with the vehicles it found boxed.
+                </p>
+              </li>
+              <li>
+                <h3>Draw the bays</h3>
+                <p>
+                  Press <strong>Edit layout</strong>. Drag across a bay on the
+                  photo to draw it, then drag its corners to fit the painted
+                  lines. Each bay gets an id you can see on the map. Press
+                  <strong>Save layout</strong> when they all fit. Nothing changes
+                  until you save, and Undo takes back any step.
+                </p>
+                <p class="guide-note">
+                  Saving a changed layout also makes the current photo the
+                  camera reference, which SlotSight later compares against to
+                  warn you if the camera has moved.
+                </p>
+              </li>
+              <li>
+                <h3>Connect the live camera</h3>
+                <p>
+                  In <strong>Live camera</strong>, enter the camera's stream
+                  address (for example <code>rtsp://camera/stream</code>),
+                  <code>0</code> for a webcam, or the path to a video file, and press
+                  <strong>Connect</strong>. SlotSight reads a frame every 2 seconds
+                  and updates the dashboard as it goes.
+                </p>
+              </li>
+              <li>
+                <h3>Adjust if needed</h3>
+                <p>
+                  In <strong>Settings</strong>, <strong>Show as not sure below</strong>
+                  sets how confident SlotSight must be before it calls a bay free
+                  or taken. Raise it if you see wrong calls; more bays will then
+                  show as not sure. Every change is saved as you make it.
+                </p>
+              </li>
+            </ol>
+          </section>
+
+          <section id="reading" aria-labelledby="readingTitle">
+            <h2 id="readingTitle">Read the dashboard</h2>
+            <h3>The bays</h3>
+            <dl class="guide-legend">
+              <div>
+                <dt><i class="legend-swatch vacant"></i>Free</dt>
+                <dd>Nothing is parked in the bay.</dd>
+              </div>
+              <div>
+                <dt><i class="legend-swatch occupied"></i>Taken</dt>
+                <dd>A vehicle is in the bay.</dd>
+              </div>
+              <div>
+                <dt><i class="legend-swatch unknown"></i>Not sure</dt>
+                <dd>
+                  The reading wasn't clear enough, for example in poor light or
+                  when something blocks the view. A bay that is not sure is
+                  never counted as free, so the free count errs on the safe side.
+                </dd>
+              </div>
+            </dl>
+            <p>
+              Point at a bay on the map, or move to it with the Tab key, to see
+              how long it has had its status and how confident the reading is.
+              A bay that just changed is outlined for a moment, and
+              <strong>Recent changes</strong> lists every bay with the newest
+              change first.
+            </p>
+
+            <h3>The status line</h3>
+            <p>The top bar and the sign's lower line say what the numbers are based on.</p>
+            <dl class="guide-states">
+              <div><dt>Live</dt><dd>A camera is connected and readings are arriving.</dd></div>
+              <div><dt>Processing video</dt><dd>A video file is being read, a frame every few seconds of footage.</dd></div>
+              <div><dt>Last reading 14:32:08</dt><dd>The latest photo or video reading, from that time.</dd></div>
+              <div><dt>No new reading for 15 s</dt><dd>A camera is connected but has stopped sending frames. The map fades until readings return.</dd></div>
+              <div><dt>Camera disconnected, Camera lost</dt><dd>The camera was disconnected, or stopped working. The last reading stays on screen, faded.</dd></div>
+              <div><dt>Demo data</dt><dd>No detection model is installed yet, so the numbers are made up to show the layout. Nothing is recorded.</dd></div>
+              <div><dt>Model loading, Model error</dt><dd>The model is starting, or can't be used. Settings shows what to do.</dd></div>
+              <div><dt>Auto refresh off, Paused while editing</dt><dd>The dashboard has stopped asking for new readings until you switch it back on or finish editing.</dd></div>
+              <div><dt>Reconnecting</dt><dd>The dashboard can't reach SlotSight. Check that the app is still running.</dd></div>
+            </dl>
+          </section>
+
+          <section id="everyday" aria-labelledby="everydayTitle">
+            <h2 id="everydayTitle">Everyday use</h2>
+            <ul class="guide-list">
+              <li>
+                <strong>Glance at the sign.</strong> The lit number is how many
+                bays are free now. If it is grey, read the line beneath it first.
+              </li>
+              <li>
+                <strong>Watch for the camera warning.</strong> If the camera is
+                knocked or turned, SlotSight says so above the map. Open
+                <strong>Edit layout</strong>, fit the bays to the new view and save.
+              </li>
+              <li>
+                <strong>See the pattern.</strong> <strong>Over time</strong> shows
+                free spaces through the last day or week and the busiest hours.
+              </li>
+              <li>
+                <strong>Take the history with you.</strong> Under
+                <strong>History</strong>, download every reading as CSV or Excel:
+                one row per bay per reading, with its status, confidence, source
+                and time.
+              </li>
+              <li>
+                <strong>Choose light or dark.</strong> Settings, then
+                <strong>Appearance</strong>. The choice is kept in this browser.
+              </li>
+            </ul>
+          </section>
+
+          <section id="accuracy" aria-labelledby="accuracyTitle">
+            <h2 id="accuracyTitle">Check the accuracy</h2>
+            <p>
+              SlotSight's accuracy on your own lot hasn't been measured yet. It
+              is measured by comparing its readings with frames you label by
+              hand, in daylight and in the evening or rain.
+            </p>
+            <ol class="guide-steps guide-steps-compact">
+              <li><p>Record a few sessions of footage from the camera, and extract frames from them (see <code>slotsight/docs/recording-guide.md</code>).</p></li>
+              <li><p>Open <a href="/label">Label frames</a> and mark each bay as taken or free, by eye.</p></li>
+              <li><p>Run <code>slotsight/eval/evaluate.py</code> to compare SlotSight's readings with your labels.</p></li>
+            </ol>
+          </section>
+
+          <section id="keys" aria-labelledby="keysTitle">
+            <h2 id="keysTitle">Keyboard shortcuts</h2>
+            <table class="guide-keys">
+              <caption>While editing the layout</caption>
+              <tbody>
+                <tr><th scope="row"><kbd>Ctrl</kbd> <kbd>Z</kbd></th><td>Undo the last change</td></tr>
+                <tr><th scope="row"><kbd>Esc</kbd></th><td>Cancel the drag in progress, or the whole edit (you can still undo that)</td></tr>
+                <tr><th scope="row">Arrow keys</th><td>Nudge the selected corner; hold <kbd>Shift</kbd> for bigger steps</td></tr>
+              </tbody>
+            </table>
+            <table class="guide-keys">
+              <caption>On the Label frames page</caption>
+              <tbody>
+                <tr><th scope="row"><kbd>Enter</kbd></th><td>Save and go to the next unlabeled frame</td></tr>
+                <tr><th scope="row"><kbd>&larr;</kbd> <kbd>&rarr;</kbd></th><td>Previous or next frame</td></tr>
+                <tr><th scope="row"><kbd>Shift</kbd> and click</th><td>Mark a bay as partly hidden</td></tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section id="limits" aria-labelledby="limitsTitle">
+            <h2 id="limitsTitle">Good to know</h2>
+            <ul class="guide-list">
+              <li>SlotSight is a prototype for one camera watching one lot.</li>
+              <li>It runs on this computer. Readings and history stay here; the only download is a detection model when you install one.</li>
+              <li>On a laptop without a graphics card, the dashboard updates every few seconds.</li>
+              <li>A reading that isn't confident enough, often in poor light or for far-away bays, is shown as not sure rather than guessed.</li>
+            </ul>
+            <p><a class="button button-primary" href="/">Open the dashboard</a></p>
+          </section>
+        </div>
+      </div>
+    </main>
+    <script src="{{ url_for('static', filename='guide.js', v='1') }}"></script>
+  </body>
+</html>

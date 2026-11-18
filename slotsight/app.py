@@ -863,6 +863,13 @@ def index():
     return render_template("index.html")
 
 
+@app.get("/guide")
+def guide():
+    """What SlotSight does and how to use it. Opens once on a browser's first visit
+    (static/first-visit.js); read-only, like every GET."""
+    return render_template("guide.html")
+
+
 def current_payload() -> dict[str, Any]:
     """The latest reading (or the no-reading view) with the model's live status.
 
