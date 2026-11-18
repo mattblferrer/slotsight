@@ -719,7 +719,9 @@ def reclassify_latest_frame(probabilities=None) -> None:
     if latest_frame is None:
         return
     slots = load_slots()
-    if probabilities is None and latest_frame_probabilities is not None and latest_frame_probabilities[0] == slots:
+    if not load_settings()["slot_classifier"]:
+        probabilities = None  # switched off: the cached classifier output must not decide
+    elif probabilities is None and latest_frame_probabilities is not None and latest_frame_probabilities[0] == slots:
         probabilities = latest_frame_probabilities[1]
     latest_frame_snapshot = snapshot(
         latest_frame,
@@ -910,36 +912,58 @@ def slot_config_problem(slots: list[Any]) -> str | None:
     return None
 
 
+DIALOG_SETTINGS = ("lot_name", "review_threshold", "inference_size", "slot_classifier")
+
+
+def settings_updates(payload: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """The dialog settings present in `payload`, validated and normalised, or an error.
+
+    Shared by /api/config (layout plus settings) and /api/settings (settings only).
+    """
+    updates: dict[str, Any] = {}
+    if "lot_name" in payload:
+        lot_name = payload["lot_name"]
+        if not isinstance(lot_name, str) or not lot_name.strip() or len(lot_name.strip()) > 80:
+            return {}, "Lot name must be between 1 and 80 characters."
+        updates["lot_name"] = lot_name.strip()
+    if "review_threshold" in payload:
+        try:
+            threshold = float(payload["review_threshold"])
+        except (TypeError, ValueError):
+            return {}, "Review confidence must be a number from 0 to 1."
+        if not 0 <= threshold <= 1:
+            return {}, "Review confidence must be between 0% and 100%."
+        updates["review_threshold"] = threshold
+    if "inference_size" in payload:
+        try:
+            size = int(payload["inference_size"])
+        except (TypeError, ValueError):
+            size = None
+        if size not in detectors.INFERENCE_SIZES:
+            return {}, f"Detection resolution must be one of {', '.join(map(str, detectors.INFERENCE_SIZES))}."
+        updates["inference_size"] = size
+    if "slot_classifier" in payload:
+        if not isinstance(payload["slot_classifier"], bool):
+            return {}, "slot_classifier must be true or false."
+        updates["slot_classifier"] = payload["slot_classifier"]
+    return updates, None
+
+
 @app.post("/api/config")
 def config():
     payload = request.get_json(silent=True) or {}
     slots = payload.get("slots")
-    settings = load_settings()
-    lot_name = payload.get("lot_name", settings["lot_name"])
-    review_threshold = payload.get("review_threshold", settings["review_threshold"])
     if not isinstance(slots, list):
         return jsonify({"error": "Provide a slots array."}), 400
-    if not isinstance(lot_name, str) or not lot_name.strip() or len(lot_name.strip()) > 80:
-        return jsonify({"error": "Lot name must be between 1 and 80 characters."}), 400
-    try:
-        review_threshold = float(review_threshold)
-    except (TypeError, ValueError):
-        return jsonify({"error": "Review confidence must be a number from 0 to 1."}), 400
-    if not 0 <= review_threshold <= 1:
-        return jsonify({"error": "Review confidence must be between 0% and 100%."}), 400
+    updates, error = settings_updates(payload)
+    if error:
+        return jsonify({"error": error}), 400
     problem = slot_config_problem(slots)
     if problem:
         return jsonify({"error": problem}), 400
-    size = payload.get("inference_size", settings["inference_size"])
-    try:
-        size = int(size)
-    except (TypeError, ValueError):
-        size = None
-    if size not in detectors.INFERENCE_SIZES:
-        return jsonify({"error": f"Detection resolution must be one of {', '.join(map(str, detectors.INFERENCE_SIZES))}."}), 400
-    use_classifier = payload.get("slot_classifier", settings["slot_classifier"])
-    if not isinstance(use_classifier, bool):
-        return jsonify({"error": "slot_classifier must be true or false."}), 400
+    settings = {**load_settings(), **updates}
+    lot_name, review_threshold = settings["lot_name"], settings["review_threshold"]
+    size, use_classifier = settings["inference_size"], settings["slot_classifier"]
     frame_before = latest_frame
     fresh = None
     if frame_before is not None:  # the new layout's classifier output, computed outside state_lock
@@ -947,7 +971,7 @@ def config():
     with state_lock:
         layout_changed = slots != load_slots()
         # Settings first: if settings.txt can't be read, nothing is saved at all.
-        save_settings(lot_name=lot_name.strip(), review_threshold=review_threshold, inference_size=size, slot_classifier=use_classifier)
+        save_settings(lot_name=lot_name, review_threshold=review_threshold, inference_size=size, slot_classifier=use_classifier)
         save_slots(slots)
         reclassify_latest_frame(fresh if latest_frame is frame_before else None)
         frame = latest_frame
@@ -957,7 +981,29 @@ def config():
         # Only when the slots changed, so renaming the lot can't hide a "moved" warning.
         camera.set_reference(frame)
         message += " The current frame is now the camera reference."
-    return jsonify({"slots": slots, "lot_name": lot_name.strip(), "review_threshold": review_threshold, "inference_size": size, "message": message})
+    return jsonify({"slots": slots, "lot_name": lot_name, "review_threshold": review_threshold, "inference_size": size, "message": message})
+
+
+@app.post("/api/settings")
+def update_settings():
+    """Save some of the dialog's settings without touching the slot layout (the
+    Settings dialog applies each control as it changes). Returns the re-classified
+    latest reading, like /api/review-threshold."""
+    payload = request.get_json(silent=True) or {}
+    updates, error = settings_updates(payload)
+    if error:
+        return jsonify({"error": error}), 400
+    if not updates:
+        return jsonify({"error": f"Provide one of: {', '.join(DIALOG_SETTINGS)}."}), 400
+    frame_before = latest_frame
+    fresh = None
+    if updates.get("slot_classifier") and frame_before is not None:
+        # Switching the classifier on: its output for the latest frame, computed outside state_lock.
+        fresh = slot_probabilities(frame_before, load_slots(), {**load_settings(), "slot_classifier": True})
+    with state_lock:
+        save_settings(**updates)
+        reclassify_latest_frame(fresh if latest_frame is frame_before else None)
+        return jsonify(latest_frame_snapshot if latest_frame_snapshot is not None else snapshot())
 
 
 @app.post("/api/review-threshold")

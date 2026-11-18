@@ -3,22 +3,21 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>SlotSight / Lot 01</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap"
-      rel="stylesheet"
-    />
+    <meta name="color-scheme" content="light dark" />
+    <title>SlotSight</title>
+    <script src="{{ url_for('static', filename='theme.js', v='1') }}"></script>
     <link
       rel="stylesheet"
-      href="{{ url_for('static', filename='style.css', v='10') }}"
+      href="{{ url_for('static', filename='style.css', v='12') }}"
     />
   </head>
   <body>
-    <header class="topbar">
+    <header class="topbar" id="topbar">
       <a class="brand" href="/"
         ><span class="brand-mark">S</span><span>slotsight</span></a
+      >
+      <span class="topbar-free" id="topbarFree" aria-hidden="true"
+        ><strong id="topbarFreeCount">--</strong> free</span
       >
       <div class="topbar-meta">
         <span class="live-dot" id="liveDot"></span><span id="liveText">Connecting...</span
@@ -27,6 +26,7 @@
       <button
         class="icon-button"
         id="refreshButton"
+        type="button"
         title="Refresh now"
         aria-label="Refresh now"
       >
@@ -35,48 +35,42 @@
     </header>
 
     <main class="shell">
-      <section class="intro">
+      <section class="page-head">
         <div>
-          <p class="eyebrow">
-            Parking operations / <span id="lotNameLabel">Lot 01</span>
-          </p>
-          <h1>Know the lot<br /><em>at a glance.</em></h1>
+          <p class="eyebrow">Parking lot</p>
+          <h1 id="lotNameLabel">Lot 01</h1>
         </div>
-        <div class="intro-actions">
-          <span class="update-note"
-            >Updated <strong id="updatedAt">--:--:--</strong></span
-          ><button class="button button-dark" id="openConfig">
-            Configure slots <span>+</span>
-          </button>
-        </div>
+        <button class="button button-secondary" id="openSettings" type="button">
+          Settings
+        </button>
       </section>
 
-      <section class="stats" aria-label="Lot summary">
+      <section class="stats" id="stats" aria-label="Lot summary">
         <article class="stat-card stat-main">
           <span class="stat-label">Available now</span
           ><strong id="freeCount">--</strong
           ><span class="stat-detail"
-            >of <span id="totalCount">--</span> defined slots</span
+            >of <span id="totalCount">--</span> slots</span
           >
         </article>
         <article class="stat-card">
           <span class="stat-label"
             ><span class="status-dot dot-occupied"></span>Occupied</span
           ><strong id="occupiedCount">--</strong
-          ><span class="stat-detail">vehicles detected</span>
+          ><span class="stat-detail">vehicle in the slot</span>
         </article>
         <article class="stat-card">
           <span class="stat-label"
-            ><span class="status-dot dot-unknown"></span>Needs review</span
+            ><span class="status-dot dot-unknown"></span>Unknown</span
           ><strong id="unknownCount">--</strong
-          ><span class="stat-detail">low confidence</span>
+          ><span class="stat-detail">too unsure to call</span>
         </article>
         <article class="stat-card stat-health">
-          <span class="stat-label">System health</span
-          ><strong id="modelLabel">Demo</strong
+          <span class="stat-label">System</span
+          ><strong id="modelLabel">--</strong
           ><span class="stat-detail"
-            ><span class="health-pill" id="healthPill">Connecting...</span> /
-            <span id="classifierLabel">refresh &lt; 5 sec</span></span
+            ><span class="health-pill" id="healthPill">Connecting...</span>
+            <span id="classifierLabel"></span></span
           >
         </article>
       </section>
@@ -87,35 +81,33 @@
       <section class="workspace">
         <div class="panel map-panel">
           <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Live occupancy map</p>
-              <h2 id="lotNameHeading">Lot 01</h2>
-            </div>
+            <h2>Occupancy map</h2>
             <div class="map-actions">
-              <button class="map-edit-button" id="editLayout" type="button">
+              <button class="button button-secondary button-sm" id="editLayout" type="button">
                 Edit layout
               </button>
-              <button class="map-edit-button" id="cancelLayout" type="button" hidden>
+              <button class="button button-secondary button-sm" id="cancelLayout" type="button" hidden>
                 Cancel
               </button>
-              <button class="map-edit-button" id="undoLayout" type="button" hidden disabled>
+              <button class="button button-secondary button-sm" id="undoLayout" type="button" hidden disabled>
                 Undo
               </button>
-              <button class="map-clear-button" id="clearLayout" type="button">
+              <button class="button button-danger button-sm" id="clearLayout" type="button">
                 Clear layout
               </button>
-              <span class="camera-tag">CAM-01</span>
             </div>
           </div>
           <div class="lot-map" id="lotMap">
             <img
               class="map-preview-image"
               id="mapPreviewImage"
-              alt="Last processed parking frame"
+              alt="Last processed parking frame, with detected vehicles boxed"
             />
-            <div class="lot-road road-top">NORTH ENTRY</div>
-            <div class="lot-road road-bottom">EXIT</div>
             <div class="map-grid"></div>
+            <p class="map-empty">
+              No frame yet. Process an image or video, or start a live source,
+              under Camera &amp; footage.
+            </p>
             <div id="slotLayer"></div>
             <div class="editor-layer" id="editorLayer" hidden></div>
             <div class="confidence-tooltip" id="confidenceTooltip" hidden></div>
@@ -138,41 +130,33 @@
               ><span><i class="legend-swatch occupied"></i>Occupied</span
               ><span><i class="legend-swatch unknown"></i>Unknown</span>
             </div>
-            <span class="map-footnote" id="mapFootnote"
-              >Polygon view / 12 slots</span
-            >
+            <span class="map-footnote" id="mapFootnote"></span>
           </div>
         </div>
-        <aside class="panel activity-panel">
+        <aside class="panel activity-panel" aria-labelledby="activityTitle">
           <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Activity</p>
-              <h2>Latest reading</h2>
-            </div>
+            <h2 id="activityTitle">Recent changes</h2>
             <span class="pulse-ring" id="activityPulse"></span>
           </div>
+          <p class="panel-note">Each slot's current status and when it began, newest first.</p>
           <div class="activity-list" id="activityList"></div>
           <div class="activity-bottom">
-            <span>Auto refresh</span
-            ><label class="switch"
+            <label class="switch" for="autoRefresh"
               ><input
                 type="checkbox"
                 class="visually-hidden"
                 id="autoRefresh"
-                aria-label="Auto refresh"
-                checked /><span></span></label
-            ><span id="refreshInterval">2s</span>
+                checked /><span class="switch-track"></span
+              ><span class="switch-label">Auto refresh every <span id="refreshInterval">2 s</span></span></label
+            >
           </div>
         </aside>
       </section>
 
       <section class="panel trends-panel" aria-labelledby="trendsTitle">
         <div class="panel-heading">
-          <div>
-            <p class="eyebrow">Trends</p>
-            <h2 id="trendsTitle">Occupancy over time</h2>
-          </div>
-          <div class="trend-range" role="group" aria-label="Time range">
+          <h2 id="trendsTitle">Occupancy over time</h2>
+          <div class="segmented trend-range" role="group" aria-label="Time range">
             <button type="button" data-range="24h" aria-pressed="true">24 h</button
             ><button type="button" data-range="7d" aria-pressed="false">7 days</button>
           </div>
@@ -204,20 +188,15 @@
       <section class="lower-grid">
         <div class="panel source-panel">
           <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Input source</p>
-              <h2>Camera &amp; footage</h2>
-            </div>
-            <span class="source-icon">CAM</span>
+            <h2>Camera &amp; footage</h2>
           </div>
           <p class="panel-copy">
-            Upload a parking-lot image or video to classify the configured
-            polygons. Videos are sampled every few seconds of footage. Until a
-            detection model is installed, a demo feed keeps the dashboard moving.
+            Process an image or a video file, or start a live source. Videos
+            are sampled every few seconds of footage.
           </p>
           <form id="uploadForm">
             <label class="upload-zone" id="uploadZone" for="sourceFile"
-              ><span class="upload-plus">+</span
+              ><span class="upload-plus" aria-hidden="true">+</span
               ><span
                 ><strong>Drop an image or video here</strong
                 ><small>or browse from your device (up to 100 MB)</small></span
@@ -231,8 +210,8 @@
               <span>Footage recorded at (optional)</span>
               <input id="recordedAt" type="datetime-local" step="1" />
             </label
-            ><button class="button button-accent" type="submit">
-              Process file <span>&rarr;</span>
+            ><button class="button button-accent button-block" type="submit">
+              Process file
             </button>
           </form>
           <form class="live-source" id="liveSourceForm">
@@ -249,74 +228,68 @@
                 ><input type="checkbox" id="liveRealtime" /> Play video files at
                 recorded speed</label
               >
-              <button class="map-edit-button" type="submit">Start</button>
-              <button class="map-clear-button" type="button" id="stopSource" disabled>
+              <button class="button button-secondary button-sm" type="submit">Start</button>
+              <button class="button button-danger button-sm" type="button" id="stopSource" disabled>
                 Stop
               </button>
             </div>
           </form>
           <p class="job-status" id="jobStatus" hidden></p>
-          <div class="frame-preview is-empty" id="framePreview">
-            <img id="previewImage" alt="Annotated parking frame" />
-            <span id="previewPlaceholder"
-              >Processed frames appear here with vehicle boxes and slot
-              indicators.</span
-            >
-          </div>
-          <p class="form-message" id="formMessage"></p>
+          <p class="form-message" id="formMessage" role="status"></p>
         </div>
         <div class="panel history-panel">
           <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Audit trail</p>
-              <h2>Export history</h2>
-            </div>
-            <span class="history-count">CSV + XLSX</span>
+            <h2>Export history</h2>
           </div>
           <p class="panel-copy">
-            Every processed frame is timestamped by slot, status, confidence,
-            and source for later review.
+            Every processed frame is logged per slot with its status,
+            confidence, source and time.
           </p>
           <div class="export-actions">
             <a class="export-button" href="/api/history.csv"
               ><span class="file-type">CSV</span><span>Download CSV</span
-              ><span>&rarr;</span></a
+              ><span aria-hidden="true">&rarr;</span></a
             ><a class="export-button" href="/api/history.xlsx"
-              ><span class="file-type file-green">XLS</span
-              ><span>Download Excel</span><span>&rarr;</span></a
+              ><span class="file-type file-green">XLSX</span
+              ><span>Download Excel</span><span aria-hidden="true">&rarr;</span></a
             >
           </div>
           <a class="history-link" href="/label">Label frames for the accuracy evaluation &rarr;</a>
         </div>
       </section>
       <footer>
-        <span>SlotSight prototype</span
-        ><span>One camera / one lot / operator view</span>
+        <span>SlotSight prototype</span><span>One camera, one lot</span>
       </footer>
     </main>
 
-    <dialog id="configDialog">
-      <form method="dialog" class="config-form">
+    <dialog id="settingsDialog" aria-labelledby="settingsTitle">
+      <div class="settings">
         <div class="dialog-head">
-          <div>
-            <p class="eyebrow">Lot setup</p>
-            <h2>Slot polygons</h2>
-          </div>
-          <button class="close-button" value="cancel" aria-label="Close">
+          <h2 id="settingsTitle">Settings</h2>
+          <button class="close-button" type="button" id="closeSettings" aria-label="Close settings">
             &#10005;
           </button>
         </div>
-        <p>
-          Name the lot and use normalized coordinates from 0 to 100. Each slot
-          needs an id and at least three points.
-        </p>
-        <label class="config-field" for="lotNameInput">
-          <span>Parking lot name</span>
-          <input id="lotNameInput" maxlength="80" required />
-        </label>
+        <p class="settings-note">Each change is saved as you make it.</p>
+
+        <div class="appearance">
+          <span class="appearance-label" id="themeLabel"
+            >Appearance <small>For this browser only</small></span
+          >
+          <div class="segmented" id="themeChoice" role="group" aria-labelledby="themeLabel">
+            <button type="button" data-theme-choice="system" aria-pressed="true">System</button
+            ><button type="button" data-theme-choice="light" aria-pressed="false">Light</button
+            ><button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
+          </div>
+        </div>
+
+        <form class="config-field" id="lotNameForm">
+          <label for="lotNameInput">Parking lot name</label>
+          <input id="lotNameInput" maxlength="80" required autocomplete="off" />
+        </form>
         <label class="config-field" for="reviewThresholdInput">
           <span
-            >Review below <output id="reviewThresholdValue">70%</output></span
+            ><span>Show as unknown below <output id="reviewThresholdValue">70%</output> confidence</span></span
           >
           <input
             id="reviewThresholdInput"
@@ -326,36 +299,55 @@
             step="5"
             value="70"
           />
+          <small>A slot read with less confidence is shown as Unknown instead of a guess.</small>
         </label>
         <label class="config-check" for="classifierInput">
           <input type="checkbox" id="classifierInput" checked />
           <span>Use the slot classifier <small id="classifierNote"></small></span>
         </label>
-        <label class="config-field" for="inferenceSizeInput">
-          <span>Detection resolution <small id="inferenceSizeNote"></small></span>
-          <select id="inferenceSizeInput">
-            <option value="640">640 px: default, fastest</option>
-            <option value="960">960 px</option>
-            <option value="1280">1280 px: small or distant cars, about 3-4x slower</option>
-          </select>
-        </label>
-        <section class="model-picker" aria-labelledby="modelPickerTitle">
-          <div class="model-picker-head">
-            <span id="modelPickerTitle">Detection model</span>
-            <small id="modelPickerNote"></small>
+
+        <details class="settings-group" id="detectionGroup">
+          <summary>Detection model and resolution</summary>
+          <label class="config-field" for="inferenceSizeInput">
+            <span>Detection resolution <small id="inferenceSizeNote"></small></span>
+            <select id="inferenceSizeInput">
+              <option value="640">640 px: default, fastest</option>
+              <option value="960">960 px</option>
+              <option value="1280">1280 px: small or distant cars, about 3-4x slower</option>
+            </select>
+          </label>
+          <section class="model-picker" aria-labelledby="modelPickerTitle">
+            <div class="model-picker-head">
+              <span id="modelPickerTitle">Detection model</span>
+              <small id="modelPickerNote"></small>
+            </div>
+            <div class="model-list" id="modelList"></div>
+            <p class="form-message" id="modelMessage" aria-live="polite"></p>
+          </section>
+        </details>
+
+        <details class="settings-group" id="jsonGroup">
+          <summary>Slot polygons as JSON</summary>
+          <p class="settings-help">
+            For exact values. Coordinates run from 0 to 100 across the frame;
+            each slot needs an id and at least three points. Edit layout on
+            the map is the easier way to draw them.
+          </p>
+          <textarea id="configInput" spellcheck="false" aria-label="Slot polygons (JSON)"></textarea>
+          <div class="dialog-actions">
+            <span class="form-message" id="jsonMessage" role="status"></span
+            ><button class="button button-secondary" id="applyJson" type="button">
+              Apply polygons
+            </button>
           </div>
-          <div class="model-list" id="modelList"></div>
-          <p class="form-message" id="modelMessage" aria-live="polite"></p>
-        </section>
-        <textarea id="configInput" spellcheck="false" aria-label="Slot polygons (JSON)"></textarea>
-        <div class="dialog-actions">
-          <span class="form-message" id="configMessage"></span
-          ><button class="button button-dark" id="saveConfig" value="default">
-            Save configuration
-          </button>
+        </details>
+
+        <div class="dialog-footer">
+          <span class="form-message" id="settingsStatus" role="status"></span
+          ><button class="button button-primary" id="doneSettings" type="button">Done</button>
         </div>
-      </form>
+      </div>
     </dialog>
-    <script src="{{ url_for('static', filename='app.js', v='9') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='11') }}"></script>
   </body>
 </html>

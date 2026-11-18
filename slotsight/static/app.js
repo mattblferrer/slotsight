@@ -21,7 +21,6 @@ const POLL_MS = 2000;
 const STALE_MIN_S = 10;
 // How long a slot that just changed status stays highlighted.
 const CHANGE_MARK_MS = 2000;
-let thresholdTimer = null;
 const $ = (id) => document.getElementById(id);
 
 function timeOnly(iso) {
@@ -299,24 +298,39 @@ function trackFreshness(data) {
   }
 }
 
+const STATUS_NAMES = { occupied: "Occupied", vacant: "Available", unknown: "Unknown" };
+const changedTime = (item) => Date.parse(item.changed_at) || 0;
+const byId = new Intl.Collator(undefined, { numeric: true });
+
+// Recent changes: every slot's current status and when it began, newest change
+// first, so what just happened is at the top instead of somewhere in slot order.
 function renderActivity(data, changed = []) {
   const readingTime = data.captured_at || data.updated_at;
-  const rows = (data.slots || []).map((item) => {
+  const slots = [...(data.slots || [])].sort(
+    (a, b) => changedTime(b) - changedTime(a) || byId.compare(a.id, b.id),
+  );
+  const rows = slots.map((item) => {
     const status = statusOf(item);
     const row = document.createElement("div");
     row.className = "activity-row";
     row.classList.toggle("is-changed", changed.includes(item.id));
     const name = document.createElement("span");
+    name.className = "activity-slot";
     const dot = document.createElement("i");
     dot.className = `status-dot dot-${status}`;
     name.append(dot, item.id);
     const label = document.createElement("span");
     label.className = "activity-status";
     const duration = statusDuration(item, readingTime);
-    label.textContent = duration ? `${status} · ${duration}` : status;
+    label.textContent = duration ? `${STATUS_NAMES[status]} · ${duration}` : STATUS_NAMES[status];
     const time = document.createElement("span");
     time.className = "activity-time";
-    time.textContent = timeOnly(item.updated_at ?? data.updated_at);
+    // When the status began; "since" when it may have begun before monitoring did.
+    if (item.changed_at) {
+      time.textContent = `${item.changed_since_start ? "since " : ""}${timeOnly(item.changed_at)}`;
+    } else {
+      time.textContent = timeOnly(item.updated_at ?? data.updated_at);
+    }
     row.append(name, label, time);
     return row;
   });
@@ -350,10 +364,10 @@ function renderModelAlert(data) {
   const status = data.model_status;
   let text = "";
   if (status && status.state === "missing") {
-    text = `No detection model is installed, so the map shows demo data.${status.error ? ` Last attempt: ${status.error}` : ""} Install one under Configure slots > Detection model.`;
+    text = `No detection model is installed, so the map shows demo data.${status.error ? ` Last attempt: ${status.error}` : ""} Install one under Settings > Detection model and resolution.`;
   } else if (status && MODEL_ERROR_STATES.includes(status.state)) {
     const reason = status.state === "needs_package" ? `${status.name} needs its Python package: ${status.message}` : status.message;
-    text = `Detection model problem: ${reason}. No frames can be processed until it is fixed under Configure slots > Detection model.`;
+    text = `Detection model problem: ${reason}. No frames can be processed until it is fixed under Settings > Detection model and resolution.`;
   }
   setText(alert, text);
   alert.hidden = !text;
@@ -388,11 +402,11 @@ function render(data) {
   const occupied = (data.slots || []).filter(
     (item) => item.status === "occupied",
   ).length;
-  $("freeCount").textContent = data.free ?? "--";
-  $("totalCount").textContent = data.total ?? "--";
-  $("occupiedCount").textContent = occupied;
-  $("unknownCount").textContent = data.unknown ?? 0;
-  $("updatedAt").textContent = timeOnly(data.updated_at);
+  setText($("freeCount"), String(data.free ?? "--"));
+  setText($("totalCount"), String(data.total ?? "--"));
+  setText($("topbarFreeCount"), `${data.free ?? "--"} of ${data.total ?? "--"}`);
+  setText($("occupiedCount"), String(occupied));
+  setText($("unknownCount"), String(data.unknown ?? 0));
   // The live state already says "Demo data", "No frame yet" or "Model error";
   // the source name is shown only when there is a real one.
   const realSource = !["demo", "none", "model error"].includes(data.source);
@@ -404,17 +418,15 @@ function render(data) {
   $("classifierLabel").textContent = classifierLabel(data.classifier);
   state.lotName = data.lot_name || state.lotName;
   state.reviewThreshold = data.review_threshold ?? state.reviewThreshold;
-  $("lotNameLabel").textContent = state.lotName;
-  $("lotNameHeading").textContent = state.lotName;
+  setText($("lotNameLabel"), state.lotName);
+  document.title = `${state.lotName} · SlotSight`;
   const changed = renderMap(data);
   renderActivity(data, changed);
   renderCamera(data);
   if ("job" in data) renderJob(data.job);
-  // The frame is a large data URL: only hand it to the images when it changes.
+  // The frame is a large data URL: only hand it to the image when it changes.
   if (data.preview_image && data.preview_image !== state.previewSrc) {
     state.previewSrc = data.preview_image;
-    $("previewImage").src = data.preview_image;
-    $("framePreview").classList.remove("is-empty");
     $("mapPreviewImage").src = data.preview_image;
     $("lotMap").classList.add("has-preview");
   }
@@ -510,27 +522,7 @@ async function postSource(url, body) {
 
 $("refreshButton").addEventListener("click", refresh);
 $("autoRefresh").addEventListener("change", setTimer);
-$("reviewThresholdInput").addEventListener("input", (event) => {
-  const threshold = Number(event.target.value) / 100;
-  state.reviewThreshold = threshold;
-  $("reviewThresholdValue").textContent = `${event.target.value}%`;
-  clearTimeout(thresholdTimer);
-  thresholdTimer = setTimeout(async () => {
-    try {
-      const response = await fetch("/api/review-threshold", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ review_threshold: threshold }),
-      });
-      const data = await response.json();
-      if (!response.ok)
-        throw new Error(data.error || "Could not update threshold.");
-      render(data);
-    } catch (error) {
-      $("configMessage").textContent = error.message;
-    }
-  }, 180);
-});
+$("refreshInterval").textContent = `${POLL_MS / 1000} s`;
 
 // --- Map toast: short confirmations, with Undo where a change can be taken back ---
 let toastTimer = null;
@@ -674,6 +666,8 @@ function setEditMode(enabled) {
   $("lotMap").classList.toggle("is-editing", enabled);
   $("editorLayer").hidden = !enabled;
   $("editLayout").textContent = enabled ? "Save layout" : "Edit layout";
+  $("editLayout").classList.toggle("button-primary", enabled); // the action that ends the edit
+  $("editLayout").classList.toggle("button-secondary", !enabled);
   $("cancelLayout").hidden = !enabled;
   $("undoLayout").hidden = !enabled;
   $("editorHint").hidden = !enabled;
@@ -719,11 +713,7 @@ async function saveVisualConfig() {
   const response = await fetch("/api/config", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      slots: state.slotConfig,
-      lot_name: state.lotName,
-      review_threshold: state.reviewThreshold,
-    }),
+    body: JSON.stringify({ slots: state.slotConfig }),
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "Could not save layout.");
@@ -937,7 +927,7 @@ $("lotMap").addEventListener("pointercancel", () => {
 // Esc cancels the gesture in progress, or else the whole edit (with an Undo toast).
 // Ctrl+Z / Cmd+Z undoes the last change while editing.
 document.addEventListener("keydown", (event) => {
-  if (!state.editing || $("configDialog").open) return;
+  if (!state.editing || $("settingsDialog").open) return;
   if (event.key === "Escape") {
     event.preventDefault();
     if (editor.drag || editor.drawing) cancelGesture();
@@ -1057,7 +1047,7 @@ $("stopSource").addEventListener("click", async () => {
   }
 });
 
-// --- Detection model picker (Configure dialog) ---
+// --- Detection model picker (Settings dialog) ---
 let modelTimer = null;
 
 function modelState(model, job) {
@@ -1128,7 +1118,7 @@ function renderModels(data) {
 function modelButton(label, disabled, onClick) {
   const button = document.createElement("button");
   button.type = "button"; // inside a method="dialog" form: never submit or close it
-  button.className = "map-edit-button";
+  button.className = "button button-secondary button-sm";
   button.textContent = label;
   button.disabled = disabled;
   button.addEventListener("click", onClick);
@@ -1154,68 +1144,180 @@ async function loadModels() {
     const data = await response.json();
     renderModels(data);
     // Follow a running install or load while the dialog is open.
-    if (data.job && data.job.state === "running" && $("configDialog").open)
+    if (data.job && data.job.state === "running" && $("settingsDialog").open)
       modelTimer = setTimeout(loadModels, 1000);
   } catch (error) {
     $("modelMessage").textContent = "Could not list the detection models.";
   }
 }
 
-$("openConfig").addEventListener("click", async () => {
-  const response = await fetch("/api/status");
-  const data = await response.json();
+// --- Settings dialog ---
+// One rule for the whole dialog: each control is saved as soon as it changes
+// (POST /api/settings, which never touches the slot layout). The polygon JSON is
+// text that has to be valid first, so it has its own Apply button.
+const settingsForm = { saved: {}, statusTimer: null, thresholdTimer: null, seq: 0 };
+
+function settingsStatus(text, isError = false) {
+  const status = $("settingsStatus");
+  clearTimeout(settingsForm.statusTimer);
+  status.textContent = text;
+  status.classList.toggle("is-error", isError);
+  if (text && !isError) settingsForm.statusTimer = setTimeout(() => (status.textContent = ""), 2500);
+}
+
+function showSettings(data) {
+  settingsForm.saved = {
+    lot_name: data.lot_name || state.lotName,
+    review_threshold: data.review_threshold ?? state.reviewThreshold,
+    inference_size: data.inference_size ?? 640,
+    slot_classifier: data.classifier?.enabled ?? true,
+  };
+  const saved = settingsForm.saved;
+  $("lotNameInput").value = saved.lot_name;
+  $("reviewThresholdInput").value = Math.round(saved.review_threshold * 100);
+  $("reviewThresholdValue").textContent = `${$("reviewThresholdInput").value}%`;
+  $("inferenceSizeInput").value = String(saved.inference_size);
+  $("classifierInput").checked = saved.slot_classifier;
+  $("classifierNote").textContent =
+    data.classifier?.state === "ready" ? `(${data.classifier.kind})` : "(no weights: the detector decides alone)";
+}
+
+// Save one or more settings. On failure the control goes back to the saved value
+// (the lot name keeps what was typed, so it can be corrected).
+async function saveSettings(updates, revert) {
+  const seq = ++settingsForm.seq;
+  settingsStatus("Saving...");
+  try {
+    const response = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not save the setting.");
+    Object.assign(settingsForm.saved, updates);
+    if (!state.editing) render(data);
+    if (seq === settingsForm.seq) settingsStatus("Saved");
+  } catch (error) {
+    if (revert) revert();
+    settingsStatus(error.message, true);
+  }
+}
+
+$("openSettings").addEventListener("click", async () => {
+  let data = state.lastData;
+  try {
+    const response = await fetch("/api/status", { cache: "no-store" });
+    if (response.ok) data = await response.json();
+  } catch (error) {
+    // Fall back to the last poll; saving will report a connection problem.
+  }
+  if (!data) return;
+  showSettings(data);
   const slots = data.slots.map((item, index) => ({
     id: item.id,
-    points: state.slotConfig?.[index]?.points || [
-      [10, 20],
-      [20, 20],
-      [20, 40],
-      [10, 40],
-    ],
+    points: state.slotConfig?.[index]?.points || item.points,
   }));
-  $("lotNameInput").value = data.lot_name || state.lotName;
-  $("reviewThresholdInput").value = Math.round(
-    (data.review_threshold ?? state.reviewThreshold) * 100,
-  );
-  $("reviewThresholdValue").textContent = `${$("reviewThresholdInput").value}%`;
-  $("inferenceSizeInput").value = String(data.inference_size ?? 640);
-  $("classifierInput").checked = data.classifier?.enabled ?? true;
-  $("classifierNote").textContent = data.classifier?.state === "ready" ? `(${data.classifier.kind})` : "(no weights: the detector decides alone)";
   $("configInput").value = JSON.stringify(slots, null, 2);
+  $("jsonMessage").textContent = "";
   $("modelMessage").textContent = "";
-  $("configDialog").showModal();
+  settingsStatus("");
+  // When the model needs attention, open its section straight away.
+  const model = data.model_status;
+  if (model && (model.state === "missing" || MODEL_ERROR_STATES.includes(model.state))) $("detectionGroup").open = true;
+  $("settingsDialog").showModal();
   loadModels();
 });
-$("saveConfig").addEventListener("click", async (event) => {
-  event.preventDefault();
-  const message = $("configMessage");
+
+// Appearance: System, Light or Dark (theme.js applies it and keeps it in this browser).
+const themeButtons = $("themeChoice").querySelectorAll("[data-theme-choice]");
+function showThemeChoice(choice) {
+  themeButtons.forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.themeChoice === choice)));
+}
+themeButtons.forEach((button) => button.addEventListener("click", () => window.slotsightTheme.set(button.dataset.themeChoice)));
+window.slotsightTheme.onChange(showThemeChoice);
+showThemeChoice(window.slotsightTheme.choice());
+
+$("closeSettings").addEventListener("click", () => $("settingsDialog").close());
+$("doneSettings").addEventListener("click", () => $("settingsDialog").close());
+$("settingsDialog").addEventListener("close", () => clearTimeout(modelTimer));
+
+function saveLotName() {
+  const value = $("lotNameInput").value.trim();
+  if (value === settingsForm.saved.lot_name) return;
+  saveSettings({ lot_name: value });
+}
+$("lotNameInput").addEventListener("change", saveLotName);
+$("lotNameForm").addEventListener("submit", (event) => {
+  event.preventDefault(); // Enter saves the name and keeps the dialog open
+  saveLotName();
+});
+
+// The slider previews on the map while it moves; the value is saved once it rests.
+$("reviewThresholdInput").addEventListener("input", (event) => {
+  $("reviewThresholdValue").textContent = `${event.target.value}%`;
+  clearTimeout(settingsForm.thresholdTimer);
+  const threshold = Number(event.target.value) / 100;
+  settingsForm.thresholdTimer = setTimeout(() => {
+    const previous = settingsForm.saved.review_threshold;
+    saveSettings({ review_threshold: threshold }, () => {
+      $("reviewThresholdInput").value = Math.round(previous * 100);
+      $("reviewThresholdValue").textContent = `${$("reviewThresholdInput").value}%`;
+    });
+  }, 180);
+});
+
+$("classifierInput").addEventListener("change", (event) => {
+  const previous = settingsForm.saved.slot_classifier;
+  saveSettings({ slot_classifier: event.target.checked }, () => (event.target.checked = previous));
+});
+
+$("inferenceSizeInput").addEventListener("change", (event) => {
+  const previous = settingsForm.saved.inference_size;
+  saveSettings({ inference_size: Number(event.target.value) }, () => (event.target.value = String(previous)));
+});
+
+$("applyJson").addEventListener("click", async () => {
+  const message = $("jsonMessage");
+  message.classList.remove("is-error");
+  let slots;
   try {
-    const slots = JSON.parse($("configInput").value);
-    const lotName = $("lotNameInput").value.trim();
-    const reviewThreshold = Number($("reviewThresholdInput").value) / 100;
+    slots = JSON.parse($("configInput").value);
+  } catch (error) {
+    message.textContent = `Not valid JSON: ${error.message}`;
+    message.classList.add("is-error");
+    return;
+  }
+  message.textContent = "Applying...";
+  try {
     const response = await fetch("/api/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        slots,
-        lot_name: lotName,
-        review_threshold: reviewThreshold,
-        inference_size: Number($("inferenceSizeInput").value),
-        slot_classifier: $("classifierInput").checked,
-      }),
+      body: JSON.stringify({ slots }),
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error);
+    if (!response.ok) throw new Error(data.error || "Could not apply the polygons.");
     state.slotConfig = slots;
-    state.lotName = data.lot_name;
-    state.reviewThreshold = data.review_threshold;
     message.textContent = data.message;
-    setTimeout(() => $("configDialog").close(), 350);
     refresh();
   } catch (error) {
-    message.textContent = error.message || "Invalid JSON.";
+    message.textContent = error.message;
+    message.classList.add("is-error");
   }
 });
+
+// --- Top bar: the free count joins the bar once the summary has scrolled under
+// it, and a hairline appears only while content runs underneath ---
+const topbar = $("topbar");
+if ("IntersectionObserver" in window) {
+  new IntersectionObserver(
+    ([entry]) => topbar.classList.toggle("show-free", !entry.isIntersecting && entry.boundingClientRect.top < 0),
+    { rootMargin: "-64px 0px 0px 0px" },
+  ).observe($("stats"));
+}
+const markScrolled = () => topbar.classList.toggle("is-scrolled", window.scrollY > 4);
+window.addEventListener("scroll", markScrolled, { passive: true });
+markScrolled();
 
 // --- Trends: free slots over time and busiest hours (plain SVG) ---
 const TREND_REFRESH_MS = 60000;

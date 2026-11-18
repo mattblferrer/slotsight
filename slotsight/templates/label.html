@@ -4,23 +4,19 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>SlotSight / Label frames</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap"
-      rel="stylesheet"
-    />
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='10') }}" />
+    <meta name="color-scheme" content="light dark" />
+    <script src="{{ url_for('static', filename='theme.js', v='1') }}"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='12') }}" />
   </head>
   <body>
     <header class="topbar">
       <a class="brand" href="/"><span class="brand-mark">S</span><span>slotsight</span></a>
       <div class="topbar-meta"><span>Evaluation set</span><span class="divider"></span><span id="labelFile">eval/labels.csv</span></div>
-      <a class="map-edit-button" href="/">Back to dashboard</a>
+      <a class="button button-secondary button-sm" href="/">Back to dashboard</a>
     </header>
 
     <main class="shell label-shell">
-      <section class="intro">
+      <section class="page-head">
         <div>
           <p class="eyebrow">Evaluation / hand labels</p>
           <h1>Label frames</h1>
@@ -42,9 +38,9 @@
               <h2 id="frameName">-</h2>
             </div>
             <div class="label-nav">
-              <button class="map-edit-button" type="button" id="prevFrame" title="Previous frame (Left arrow)">&larr; Previous</button
-              ><button class="map-edit-button" type="button" id="nextFrame" title="Next frame (Right arrow)">Next &rarr;</button
-              ><button class="map-edit-button" type="button" id="nextUnlabeled">Next unlabeled</button>
+              <button class="button button-secondary button-sm" type="button" id="prevFrame" title="Previous frame (Left arrow)">&larr; Previous</button
+              ><button class="button button-secondary button-sm" type="button" id="nextFrame" title="Next frame (Right arrow)">Next &rarr;</button
+              ><button class="button button-secondary button-sm" type="button" id="nextUnlabeled">Next unlabeled</button>
             </div>
           </div>
           <div class="label-stage" id="labelStage">
@@ -66,12 +62,12 @@
             <select id="labelCondition"></select>
           </label>
           <div class="label-bulk" role="group" aria-label="Set every unset slot">
-            <button class="map-edit-button" type="button" id="restVacant">Unset &rarr; vacant</button
-            ><button class="map-edit-button" type="button" id="restOccupied">Unset &rarr; occupied</button
-            ><button class="map-clear-button" type="button" id="clearAll">Clear</button>
+            <button class="button button-secondary button-sm" type="button" id="restVacant">Unset &rarr; vacant</button
+            ><button class="button button-secondary button-sm" type="button" id="restOccupied">Unset &rarr; occupied</button
+            ><button class="button button-danger button-sm" type="button" id="clearAll">Clear</button>
           </div>
           <div class="label-slots" id="labelSlots"></div>
-          <button class="button button-accent" type="button" id="saveNext">Save &amp; next <span>&rarr;</span></button>
+          <button class="button button-accent button-block" type="button" id="saveNext">Save &amp; next <span aria-hidden="true">&rarr;</span></button>
           <p class="form-message" id="labelMessage" aria-live="polite"></p>
         </aside>
       </section>

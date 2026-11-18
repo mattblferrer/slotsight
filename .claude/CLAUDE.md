@@ -56,7 +56,7 @@ API:
 - `GET /api/status` (the snapshot plus `job`)
 - `POST /api/process` (multipart `source`, optional `recorded_at`; images return immediately, videos return 202 and run as a job)
 - `POST /api/source` (`target`, `realtime`, `recorded_at`), `POST /api/source/stop`, `GET /api/source`
-- `POST /api/config`, `POST /api/review-threshold`
+- `POST /api/config` (`slots`, plus any settings), `POST /api/settings` (any of `lot_name`, `review_threshold`, `inference_size`, `slot_classifier`; never the layout; the Settings dialog saves each control through it), `POST /api/review-threshold`
 - `GET /api/models` (catalogue, active id, running job), `POST /api/models/install` (`id`; 202, background download), `POST /api/models/select` (`id`; must be installed; saves `model` and loads in the background)
 - `GET /label` (labeling page), `GET /api/label/frames`, `GET /api/label/image?frame=`, `GET /api/label/frame?frame=`, `POST /api/label/frame` (`frame`, `condition`, `slots`)
 - `GET /api/history.csv`, `GET /api/history.xlsx`, `GET /api/trends?range=24h|7d` (read-only, cached by history size and modification time)
