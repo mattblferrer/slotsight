@@ -6,10 +6,21 @@ const state = {
   timer: null,
   editing: false,
   hoverId: null, // slot under the pointer, so the tooltip follows each refresh
+  lastData: null, // the last status payload, for the live-state indicator
+  job: null, // the last known source job
+  offline: false, // the last status poll failed
+  lastUpdatedAt: null, // `updated_at` of the last reading seen
+  lastChangeAt: Date.now(), // browser time when that reading (or a new job) arrived
+  previewSrc: null, // the frame image currently shown
 };
 // Dashboard poll interval. Sources sample every 2 s by default, so a change
 // reaches the screen within about 2 s + processing + 2 s, under R-04's 5 s.
 const POLL_MS = 2000;
+// A running source counts as stale after this long without a new reading
+// (at least 10 s, or three sample intervals for slower sampling).
+const STALE_MIN_S = 10;
+// How long a slot that just changed status stays highlighted.
+const CHANGE_MARK_MS = 2000;
 let thresholdTimer = null;
 const $ = (id) => document.getElementById(id);
 
@@ -22,13 +33,26 @@ function timeOnly(iso) {
   });
 }
 
+// Write text only when it changes, so live regions and alerts are not
+// re-announced by screen readers on every poll.
+function setText(element, text) {
+  if (element.textContent !== text) element.textContent = text;
+}
+
 const SVG_NS = "http://www.w3.org/2000/svg";
 const STATUSES = ["occupied", "vacant", "unknown"];
 // A shape as well as a colour, so status reads without relying on colour alone.
-const STATUS_GLYPHS = { occupied: "\u25CF", vacant: "\u25CB", unknown: "?" };
+const STATUS_GLYPHS = { occupied: "●", vacant: "○", unknown: "?" };
+const MODEL_ERROR_STATES = ["error", "needs_package", "unknown"];
+const TONES = ["live", "warn", "error", "idle", "offline"];
 
 function statusOf(item) {
   return STATUSES.includes(item.status) ? item.status : "unknown";
+}
+
+function setStatusClass(element, status) {
+  element.classList.remove(...STATUSES.map((name) => `status-${name}`));
+  element.classList.add(`status-${status}`);
 }
 
 // How long a slot has had its status, measured to the reading's own time (for
@@ -54,72 +78,136 @@ function slotLabel(item, readingTime = state.readingTime) {
 
 // R-06: every slot is filled in its status colour, carries a pinned ID chip,
 // and shows its status, confidence and last-update time on hover or focus.
+// The elements are kept between polls (keyed by slot id) and updated in place,
+// so a status change fades to its new colour and the slot is marked once.
+const mapEls = new Map();
+
+function createSlotEls(id) {
+  const shape = document.createElementNS(SVG_NS, "polygon");
+  shape.setAttribute("class", "slot-shape");
+  const hit = document.createElement("button");
+  hit.type = "button";
+  hit.className = "slot-hit";
+  hit.addEventListener("pointerenter", (event) => showConfidence(id, event));
+  hit.addEventListener("pointermove", moveConfidence);
+  hit.addEventListener("pointerleave", hideConfidence);
+  hit.addEventListener("focus", () => showConfidence(id));
+  hit.addEventListener("blur", hideConfidence);
+  const chip = document.createElement("span");
+  chip.className = "slot-chip";
+  chip.setAttribute("aria-hidden", "true");
+  const glyph = document.createElement("b");
+  return { shape, hit, chip, glyph, status: null, pointsKey: "", markTimer: null };
+}
+
+function removeSlotEls(els) {
+  clearTimeout(els.markTimer);
+  els.shape.remove();
+  els.hit.remove();
+  els.chip.remove();
+}
+
+// Mark a slot whose status just changed. Restarting the animation needs the
+// class removed and a style flush before it is added again.
+function markChanged(els) {
+  for (const element of [els.shape, els.chip]) {
+    element.classList.remove("is-changed");
+    void element.getBoundingClientRect();
+    element.classList.add("is-changed");
+  }
+  clearTimeout(els.markTimer);
+  els.markTimer = setTimeout(() => {
+    els.shape.classList.remove("is-changed");
+    els.chip.classList.remove("is-changed");
+  }, CHANGE_MARK_MS);
+}
+
+// Returns the ids of slots whose status changed since the last render.
 function renderMap(data) {
   state.slots = data.slots || [];
   const layer = $("slotLayer");
-  layer.replaceChildren();
-  const shapes = document.createElementNS(SVG_NS, "svg");
-  shapes.setAttribute("class", "slot-shapes");
-  shapes.setAttribute("viewBox", "0 0 100 100");
-  shapes.setAttribute("preserveAspectRatio", "none");
-  shapes.setAttribute("aria-hidden", "true");
-  layer.appendChild(shapes);
+  let shapes = layer.querySelector(".slot-shapes");
+  if (!shapes) {
+    shapes = document.createElementNS(SVG_NS, "svg");
+    shapes.setAttribute("class", "slot-shapes");
+    shapes.setAttribute("viewBox", "0 0 100 100");
+    shapes.setAttribute("preserveAspectRatio", "none");
+    shapes.setAttribute("aria-hidden", "true");
+    layer.appendChild(shapes);
+  }
+  const seen = new Set();
+  const changed = [];
   state.slots.forEach((item, index) => {
     const points = state.slotConfig?.[index]?.points || item.points;
     if (!points?.length) return;
     const status = statusOf(item);
+    seen.add(item.id);
+    let els = mapEls.get(item.id);
+    if (!els) {
+      els = createSlotEls(item.id);
+      shapes.appendChild(els.shape);
+      layer.append(els.hit, els.chip);
+      mapEls.set(item.id, els);
+    } else if (els.status !== status) {
+      changed.push(item.id);
+      markChanged(els);
+    }
+    if (els.status !== status) {
+      setStatusClass(els.shape, status);
+      setStatusClass(els.chip, status);
+      els.status = status;
+    }
 
-    const shape = document.createElementNS(SVG_NS, "polygon");
-    shape.setAttribute("points", points.map(([x, y]) => `${x},${y}`).join(" "));
-    shape.setAttribute("class", `slot-shape status-${status}`);
-    shapes.appendChild(shape);
-
-    const hit = document.createElement("button");
-    hit.type = "button";
-    hit.className = `slot-hit status-${status}`;
-    hit.style.clipPath = `polygon(${points.map(([x, y]) => `${x}% ${y}%`).join(",")})`;
-    hit.setAttribute("aria-label", slotLabel(item));
-    hit.addEventListener("pointerenter", (event) => showConfidence(item, event));
-    hit.addEventListener("pointermove", moveConfidence);
-    hit.addEventListener("pointerleave", hideConfidence);
-    hit.addEventListener("focus", () => showConfidence(item));
-    hit.addEventListener("blur", hideConfidence);
-    layer.appendChild(hit);
-
-    const chip = document.createElement("span");
-    chip.className = `slot-chip status-${status}`;
-    chip.setAttribute("aria-hidden", "true");
-    // Pin the chip at the polygon's centre, kept far enough from the edges to stay readable.
-    const centre = (axis) => points.reduce((sum, point) => sum + Number(point[axis]), 0) / points.length;
-    chip.style.left = `${Math.min(95, Math.max(5, centre(0)))}%`;
-    chip.style.top = `${Math.min(96, Math.max(4, centre(1)))}%`;
-    const glyph = document.createElement("b");
-    glyph.textContent = STATUS_GLYPHS[status];
-    chip.append(item.id, glyph);
-    layer.appendChild(chip);
+    const pointsKey = JSON.stringify(points);
+    if (els.pointsKey !== pointsKey) {
+      els.pointsKey = pointsKey;
+      els.shape.setAttribute("points", points.map(([x, y]) => `${x},${y}`).join(" "));
+      els.hit.style.clipPath = `polygon(${points.map(([x, y]) => `${x}% ${y}%`).join(",")})`;
+      // Pin the chip at the polygon's centre, kept far enough from the edges to stay readable.
+      const centre = (axis) => points.reduce((sum, point) => sum + Number(point[axis]), 0) / points.length;
+      els.chip.style.left = `${Math.min(95, Math.max(5, centre(0)))}%`;
+      els.chip.style.top = `${Math.min(96, Math.max(4, centre(1)))}%`;
+    }
+    els.hit.setAttribute("aria-label", slotLabel(item));
+    els.glyph.textContent = STATUS_GLYPHS[status];
+    if (els.chip.firstChild?.nodeValue !== item.id || els.chip.childNodes.length !== 2) {
+      els.chip.replaceChildren(item.id, els.glyph);
+    }
   });
+  for (const [id, els] of mapEls) {
+    if (!seen.has(id)) {
+      removeSlotEls(els);
+      mapEls.delete(id);
+    }
+  }
   $("mapFootnote").textContent = `Polygon view / ${state.slots.length} slots`;
-  // The slot buttons were rebuilt, so no new pointer event fires for a still pointer:
+  // A still pointer gets no new pointer event when the reading changes:
   // refresh an open tooltip from the new data instead of leaving the old reading.
   if (state.hoverId !== null) {
     const hovered = state.slots.find((item) => item.id === state.hoverId);
     if (hovered) $("confidenceTooltip").textContent = slotLabel(hovered);
     else hideConfidence();
   }
-  if (state.editing) renderEditor();
+  return changed;
 }
 
-function renderMapStamp(data) {
+function renderMapStamp(data, warning = "") {
+  if (!data) return;
   const parts = [`Updated ${timeOnly(data.updated_at)}`];
   if (data.captured_at) parts.push(`captured ${timeOnly(data.captured_at)}`);
   else if (data.frame_time_s != null) parts.push(`video ${seconds(data.frame_time_s)}`);
   if (data.source === "demo") parts.push("demo data");
-  $("mapStamp").textContent = parts.join(" / ");
+  if (warning) parts.unshift(warning);
+  const stamp = $("mapStamp");
+  setText(stamp, parts.join(" / "));
+  stamp.classList.toggle("is-stale", Boolean(warning));
 }
 
-function showConfidence(item, event) {
+function showConfidence(id, event) {
+  const item = state.slots.find((slot) => slot.id === id);
+  if (!item) return;
   const tooltip = $("confidenceTooltip");
-  state.hoverId = item.id;
+  state.hoverId = id;
   tooltip.textContent = slotLabel(item);
   tooltip.hidden = false;
   moveConfidence(event);
@@ -143,117 +231,81 @@ function hideConfidence() {
   $("confidenceTooltip").hidden = true;
 }
 
+const clampPercent = (value) => Math.round(Math.max(0, Math.min(100, value)) * 100) / 100;
+
 function mapPoint(event) {
   const bounds = $("lotMap").getBoundingClientRect();
   return [
-    Math.max(
-      0,
-      Math.min(100, ((event.clientX - bounds.left) / bounds.width) * 100),
-    ),
-    Math.max(
-      0,
-      Math.min(100, ((event.clientY - bounds.top) / bounds.height) * 100),
-    ),
+    clampPercent(((event.clientX - bounds.left) / bounds.width) * 100),
+    clampPercent(((event.clientY - bounds.top) / bounds.height) * 100),
   ];
 }
 
-function renderEditor() {
-  const editor = $("editorLayer");
-  editor.replaceChildren();
-  state.slotConfig.forEach((slot, index) => {
-    const xs = slot.points.map((point) => point[0]);
-    const ys = slot.points.map((point) => point[1]);
-    const left = Math.min(...xs);
-    const top = Math.min(...ys);
-    const width = Math.max(...xs) - left;
-    const height = Math.max(...ys) - top;
-    const item = document.createElement("div");
-    item.className = "editor-slot";
-    item.style.left = `${left}%`;
-    item.style.top = `${top}%`;
-    item.style.width = `${width}%`;
-    item.style.height = `${height}%`;
-    const polygonPoints = slot.points
-      .map(
-        (point) =>
-          `${((point[0] - left) / width) * 100},${((point[1] - top) / height) * 100}`,
-      )
-      .join(" ");
-    // Built with DOM calls: slot ids come from config and must never be parsed as HTML.
-    const svg = document.createElementNS(SVG_NS, "svg");
-    svg.setAttribute("class", "editor-polygon");
-    svg.setAttribute("viewBox", "0 0 100 100");
-    svg.setAttribute("preserveAspectRatio", "none");
-    svg.setAttribute("aria-hidden", "true");
-    const polygon = document.createElementNS(SVG_NS, "polygon");
-    polygon.setAttribute("points", polygonPoints);
-    svg.appendChild(polygon);
-    const label = document.createElement("span");
-    label.textContent = slot.id;
-    const deleteButton = document.createElement("button");
-    deleteButton.type = "button";
-    deleteButton.className = "editor-delete";
-    deleteButton.dataset.deleteSlot = index;
-    deleteButton.title = `Delete ${slot.id}`;
-    deleteButton.setAttribute("aria-label", `Delete ${slot.id}`);
-    deleteButton.textContent = "x";
-    item.append(svg, label, deleteButton);
-    deleteButton.style.left = "100%";
-    deleteButton.style.top = "0%";
-    slot.points.forEach((point, pointIndex) => {
-      const handle = document.createElement("button");
-      handle.type = "button";
-      handle.className = "editor-handle";
-      handle.dataset.slotIndex = index;
-      handle.dataset.pointIndex = pointIndex;
-      handle.title = `Move ${slot.id} corner ${pointIndex + 1}`;
-      handle.setAttribute(
-        "aria-label",
-        `Move ${slot.id} corner ${pointIndex + 1}`,
-      );
-      handle.style.left = `${((point[0] - left) / width) * 100}%`;
-      handle.style.top = `${((point[1] - top) / height) * 100}%`;
-      item.appendChild(handle);
-    });
-    editor.appendChild(item);
-  });
+// --- Live state: what the dashboard is showing, said honestly ---
+// One state drives the top-bar dot and text, the health card and the activity
+// ring, so "live" only ever appears while a source is actually delivering readings.
+function staleAfterS(job) {
+  return Math.max(STALE_MIN_S, 3 * (Number(job.interval_s) || 0));
 }
 
-function setEditMode(enabled) {
-  state.editing = enabled;
-  $("lotMap").classList.toggle("is-editing", enabled);
-  $("editorLayer").hidden = !enabled;
-  $("editLayout").textContent = enabled ? "Save layout" : "Edit layout";
-  if (enabled) {
-    if (state.timer) clearInterval(state.timer);
-    renderEditor();
-  } else {
-    setTimer();
+function liveState() {
+  const data = state.lastData;
+  if (state.offline) return { tone: "offline", text: "Reconnecting...", stale: true };
+  if (!data) return { tone: "idle", text: "Connecting..." };
+  if (state.editing) return { tone: "idle", text: "Paused while editing" };
+  const model = data.model_status;
+  if (data.source === "model error" || (model && MODEL_ERROR_STATES.includes(model.state)))
+    return { tone: "error", text: "Model error" };
+  if (data.source === "demo") return { tone: "warn", text: "Demo data" };
+  if (data.source === "none")
+    return model && ["downloading", "loading"].includes(model.state)
+      ? { tone: "warn", text: "Model loading" }
+      : { tone: "idle", text: "No frame yet" };
+  if (!$("autoRefresh").checked) return { tone: "idle", text: "Auto refresh off" };
+  const job = state.job;
+  if (job && job.state === "starting") return { tone: "idle", text: "Starting source" };
+  if (job && job.state === "running") {
+    const quiet = Math.round((Date.now() - state.lastChangeAt) / 1000);
+    if (quiet > staleAfterS(job)) return { tone: "warn", text: `No new reading for ${quiet} s`, stale: true };
+    return { tone: "live", text: job.kind === "file" ? "Processing video" : "Live" };
+  }
+  return { tone: "idle", text: `Last reading ${timeOnly(data.updated_at)}` };
+}
+
+function renderLiveState() {
+  const live = liveState();
+  for (const id of ["liveDot", "healthPill", "activityPulse"]) {
+    const element = $(id);
+    element.classList.remove(...TONES.map((tone) => `tone-${tone}`));
+    element.classList.add(`tone-${live.tone}`);
+  }
+  setText($("liveText"), live.text);
+  setText($("healthPill"), live.text);
+  $("lotMap").classList.toggle("is-stale", Boolean(live.stale));
+  renderMapStamp(state.lastData, live.stale ? live.text : "");
+}
+
+// Note when a new reading (or a new source) arrives, in browser time, so
+// staleness never depends on the server's clock.
+function trackFreshness(data) {
+  if (data.updated_at !== state.lastUpdatedAt) {
+    state.lastUpdatedAt = data.updated_at;
+    state.lastChangeAt = Date.now();
+  }
+  if ("job" in data) {
+    const startedAt = data.job?.started_at ?? null;
+    if (startedAt !== (state.job?.started_at ?? null)) state.lastChangeAt = Date.now();
+    state.job = data.job;
   }
 }
 
-async function saveVisualConfig() {
-  const response = await fetch("/api/config", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      slots: state.slotConfig,
-      lot_name: state.lotName,
-      review_threshold: state.reviewThreshold,
-    }),
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Could not save layout.");
-  setEditMode(false);
-  await refresh();
-}
-
-function renderActivity(data) {
+function renderActivity(data, changed = []) {
   const readingTime = data.captured_at || data.updated_at;
   const rows = (data.slots || []).map((item) => {
     const status = statusOf(item);
     const row = document.createElement("div");
     row.className = "activity-row";
+    row.classList.toggle("is-changed", changed.includes(item.id));
     const name = document.createElement("span");
     const dot = document.createElement("i");
     dot.className = `status-dot dot-${status}`;
@@ -299,11 +351,11 @@ function renderModelAlert(data) {
   let text = "";
   if (status && status.state === "missing") {
     text = `No detection model is installed, so the map shows demo data.${status.error ? ` Last attempt: ${status.error}` : ""} Install one under Configure slots > Detection model.`;
-  } else if (status && ["error", "needs_package", "unknown"].includes(status.state)) {
+  } else if (status && MODEL_ERROR_STATES.includes(status.state)) {
     const reason = status.state === "needs_package" ? `${status.name} needs its Python package: ${status.message}` : status.message;
     text = `Detection model problem: ${reason}. No frames can be processed until it is fixed under Configure slots > Detection model.`;
   }
-  alert.textContent = text;
+  setText(alert, text);
   alert.hidden = !text;
   alert.classList.toggle("is-error", Boolean(status) && status.state !== "missing");
 }
@@ -315,9 +367,12 @@ function renderCamera(data) {
   const alert = $("cameraAlert");
   const moved = camera.state === "moved";
   alert.hidden = !moved;
-  alert.textContent = moved
-    ? `The camera may have moved: slots look about ${camera.shift_pct ?? "?"}% of the frame width out of place (${camera.streak} checks in a row). Check the layout with Edit layout; saving it makes the current frame the new reference.`
-    : "";
+  setText(
+    alert,
+    moved
+      ? `The camera may have moved: slots look about ${camera.shift_pct ?? "?"}% of the frame width out of place (${camera.streak} checks in a row). Check the layout with Edit layout; saving it makes the current frame the new reference.`
+      : "",
+  );
   const notes = {
     ok: `Camera check OK${camera.shift_pct != null ? ` (${camera.shift_pct}% shift)` : ""}`,
     suspect: `Camera check: possible shift of ${camera.shift_pct}% (${camera.streak} of 3 checks)`,
@@ -328,6 +383,7 @@ function renderCamera(data) {
 }
 
 function render(data) {
+  state.lastData = data;
   state.readingTime = data.captured_at || data.updated_at;
   const occupied = (data.slots || []).filter(
     (item) => item.status === "occupied",
@@ -337,8 +393,12 @@ function render(data) {
   $("occupiedCount").textContent = occupied;
   $("unknownCount").textContent = data.unknown ?? 0;
   $("updatedAt").textContent = timeOnly(data.updated_at);
-  const sourceLabels = { demo: "Demo source", none: "No frame yet", "model error": "Model error" };
-  $("sourceLabel").textContent = sourceLabels[data.source] ?? data.source;
+  // The live state already says "Demo data", "No frame yet" or "Model error";
+  // the source name is shown only when there is a real one.
+  const realSource = !["demo", "none", "model error"].includes(data.source);
+  $("sourceLabel").textContent = realSource ? data.source : "";
+  $("sourceLabel").hidden = !realSource;
+  $("sourceDivider").hidden = !realSource;
   $("modelLabel").textContent = modelLabel(data);
   renderModelAlert(data);
   $("classifierLabel").textContent = classifierLabel(data.classifier);
@@ -346,24 +406,40 @@ function render(data) {
   state.reviewThreshold = data.review_threshold ?? state.reviewThreshold;
   $("lotNameLabel").textContent = state.lotName;
   $("lotNameHeading").textContent = state.lotName;
-  renderMap(data);
-  renderMapStamp(data);
-  renderActivity(data);
+  const changed = renderMap(data);
+  renderActivity(data, changed);
   renderCamera(data);
   if ("job" in data) renderJob(data.job);
-  if (data.preview_image) {
-    const preview = $("framePreview");
+  // The frame is a large data URL: only hand it to the images when it changes.
+  if (data.preview_image && data.preview_image !== state.previewSrc) {
+    state.previewSrc = data.preview_image;
     $("previewImage").src = data.preview_image;
-    preview.classList.remove("is-empty");
+    $("framePreview").classList.remove("is-empty");
     $("mapPreviewImage").src = data.preview_image;
     $("lotMap").classList.add("has-preview");
   }
+  trackFreshness(data);
+  renderLiveState();
 }
 
+// Size the map to the frame so it is shown undistorted (see .has-ratio).
+$("mapPreviewImage").addEventListener("load", (event) => {
+  const { naturalWidth: width, naturalHeight: height } = event.currentTarget;
+  if (!width || !height) return;
+  const map = $("lotMap");
+  map.style.setProperty("--frame-ratio", String(width / height));
+  map.classList.add("has-ratio");
+});
+
 async function refresh() {
+  // Unsaved layout edits must not be replaced by the saved layout.
+  if (state.editing) return;
   try {
     const response = await fetch("/api/status", { cache: "no-store" });
+    if (!response.ok) throw new Error(`Status ${response.status}`);
     const data = await response.json();
+    if (state.editing) return;
+    state.offline = false;
     state.slotConfig = data.slots.map((item) => ({
       id: item.id,
       points: item.points,
@@ -372,13 +448,17 @@ async function refresh() {
     state.reviewThreshold = data.review_threshold ?? state.reviewThreshold;
     render(data);
   } catch (error) {
-    $("formMessage").textContent = "Could not reach the monitor.";
+    // Shown where the live state is shown (top bar, health card, map), not in a form.
+    state.offline = true;
+    renderLiveState();
   }
 }
 
 function setTimer() {
   if (state.timer) clearInterval(state.timer);
-  if ($("autoRefresh").checked) state.timer = setInterval(refresh, POLL_MS);
+  state.timer = null;
+  if ($("autoRefresh").checked && !state.editing) state.timer = setInterval(refresh, POLL_MS);
+  renderLiveState();
 }
 
 function seconds(value) {
@@ -451,69 +531,366 @@ $("reviewThresholdInput").addEventListener("input", (event) => {
     }
   }, 180);
 });
+
+// --- Map toast: short confirmations, with Undo where a change can be taken back ---
+let toastTimer = null;
+let toastUndo = null;
+
+function showToast(text, onUndo = null) {
+  $("mapToastText").textContent = text;
+  toastUndo = onUndo;
+  $("mapToastUndo").hidden = !onUndo;
+  $("mapToast").hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, onUndo ? 8000 : 3000);
+}
+
+function hideToast() {
+  clearTimeout(toastTimer);
+  $("mapToast").hidden = true;
+  toastUndo = null;
+}
+
+$("mapToastUndo").addEventListener("click", () => {
+  const undo = toastUndo;
+  hideToast();
+  if (undo) undo();
+});
+
+function setMapMessage(text, isError = false) {
+  const message = $("mapMessage");
+  message.textContent = text;
+  message.classList.toggle("is-error", isError);
+}
+
+// --- Layout editor ---
+// Edits stay in the browser until "Save layout". Every change can be undone
+// (button or Ctrl+Z); Cancel or Esc discards the edit, with an Undo toast.
+const editor = {
+  undo: [], // layouts before each change, newest last
+  els: [], // per slot: its outline, label, delete button and corner handles
+  drag: null, // the corner being dragged
+  drawing: null, // the slot being drawn
+};
+const UNDO_LIMIT = 50;
+
+function cloneLayout() {
+  return { slotConfig: structuredClone(state.slotConfig), slots: structuredClone(state.slots) };
+}
+
+function updateUndoButton() {
+  $("undoLayout").disabled = editor.undo.length === 0;
+}
+
+function pushUndo(layout = cloneLayout()) {
+  editor.undo.push(layout);
+  if (editor.undo.length > UNDO_LIMIT) editor.undo.shift();
+  hideToast(); // a toast's Undo would otherwise undo this newer change
+  updateUndoButton();
+}
+
+function restoreLayout(layout) {
+  state.slotConfig = layout.slotConfig;
+  state.slots = layout.slots;
+  renderMap({ slots: state.slots });
+  renderEditor();
+}
+
+function undoLayout() {
+  const previous = editor.undo.pop();
+  if (!previous) return;
+  hideToast();
+  restoreLayout(previous);
+  updateUndoButton();
+}
+
+function slotBounds(points) {
+  const xs = points.map((point) => point[0]);
+  const ys = points.map((point) => point[1]);
+  return { left: Math.min(...xs), top: Math.min(...ys), right: Math.max(...xs) };
+}
+
+function renderEditor() {
+  const layer = $("editorLayer");
+  // Built with DOM calls: slot ids come from config and must never be parsed as HTML.
+  const shapes = document.createElementNS(SVG_NS, "svg");
+  shapes.setAttribute("class", "editor-shapes");
+  shapes.setAttribute("viewBox", "0 0 100 100");
+  shapes.setAttribute("preserveAspectRatio", "none");
+  shapes.setAttribute("aria-hidden", "true");
+  const nodes = [shapes];
+  editor.els = state.slotConfig.map((slot, index) => {
+    const polygon = document.createElementNS(SVG_NS, "polygon");
+    shapes.appendChild(polygon);
+    const label = document.createElement("span");
+    label.className = "editor-label";
+    label.textContent = slot.id;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "editor-delete";
+    remove.dataset.deleteSlot = index;
+    remove.title = `Delete ${slot.id}`;
+    remove.setAttribute("aria-label", `Delete ${slot.id}`);
+    remove.textContent = "×";
+    const handles = slot.points.map((point, pointIndex) => {
+      const handle = document.createElement("button");
+      handle.type = "button";
+      handle.className = "editor-handle";
+      handle.dataset.slotIndex = index;
+      handle.dataset.pointIndex = pointIndex;
+      handle.title = `Move ${slot.id} corner ${pointIndex + 1}`;
+      handle.setAttribute("aria-label", `Move ${slot.id} corner ${pointIndex + 1}. Arrow keys nudge it.`);
+      return handle;
+    });
+    nodes.push(label, remove, ...handles);
+    return { polygon, label, remove, handles };
+  });
+  if (editor.drawing) nodes.push(editor.drawing.preview);
+  layer.replaceChildren(...nodes);
+  state.slotConfig.forEach((_, index) => positionEditorSlot(index));
+}
+
+// Move one slot's outline, label, delete button and handles to its points.
+function positionEditorSlot(index) {
+  const slot = state.slotConfig[index];
+  const els = editor.els[index];
+  if (!slot || !els) return;
+  els.polygon.setAttribute("points", slot.points.map(([x, y]) => `${x},${y}`).join(" "));
+  const box = slotBounds(slot.points);
+  els.label.style.left = `${box.left}%`;
+  els.label.style.top = `${box.top}%`;
+  els.remove.style.left = `${box.right}%`;
+  els.remove.style.top = `${box.top}%`;
+  slot.points.forEach(([x, y], pointIndex) => {
+    const handle = els.handles[pointIndex];
+    if (!handle) return;
+    handle.style.left = `${x}%`;
+    handle.style.top = `${y}%`;
+  });
+}
+
+function setEditMode(enabled) {
+  state.editing = enabled;
+  $("lotMap").classList.toggle("is-editing", enabled);
+  $("editorLayer").hidden = !enabled;
+  $("editLayout").textContent = enabled ? "Save layout" : "Edit layout";
+  $("cancelLayout").hidden = !enabled;
+  $("undoLayout").hidden = !enabled;
+  $("editorHint").hidden = !enabled;
+  setMapMessage(""); // a save error belongs to the edit it came from
+  if (enabled) {
+    editor.undo = [];
+    updateUndoButton();
+    hideToast();
+    hideConfidence();
+    renderEditor();
+  } else {
+    cancelGesture();
+    editor.els = [];
+    $("editorLayer").replaceChildren();
+  }
+  setTimer(); // polling pauses while editing
+}
+
+function cancelGesture() {
+  if (editor.drag) endHandleDrag(false);
+  if (editor.drawing) {
+    editor.drawing.preview.remove();
+    editor.drawing = null;
+  }
+}
+
+// Leave edit mode without saving. The discarded edit can be brought back from the toast.
+function cancelEditing() {
+  const discarded = { ...cloneLayout(), undo: editor.undo };
+  const hadChanges = editor.undo.length > 0;
+  setEditMode(false);
+  refresh(); // show the saved layout again
+  if (hadChanges)
+    showToast("Layout changes discarded.", () => {
+      setEditMode(true);
+      editor.undo = discarded.undo;
+      restoreLayout(discarded);
+      updateUndoButton();
+    });
+}
+
+async function saveVisualConfig() {
+  const response = await fetch("/api/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      slots: state.slotConfig,
+      lot_name: state.lotName,
+      review_threshold: state.reviewThreshold,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Could not save layout.");
+  setEditMode(false);
+  await refresh();
+  showToast("Layout saved.");
+}
+
 $("editLayout").addEventListener("click", async () => {
   if (!state.editing) {
     setEditMode(true);
     return;
   }
+  const button = $("editLayout");
+  button.disabled = true;
+  setMapMessage("Saving layout...");
   try {
     await saveVisualConfig();
+    setMapMessage("");
   } catch (error) {
-    window.alert(error.message);
+    setMapMessage(error.message, true);
+  } finally {
+    button.disabled = false;
   }
 });
+$("cancelLayout").addEventListener("click", cancelEditing);
+$("undoLayout").addEventListener("click", undoLayout);
+
 $("editorLayer").addEventListener("click", (event) => {
   const button = event.target.closest("[data-delete-slot]");
   if (!button) return;
   const index = Number(button.dataset.deleteSlot);
+  const id = state.slotConfig[index]?.id;
+  if (id == null) return;
+  pushUndo();
   state.slotConfig.splice(index, 1);
   state.slots.splice(index, 1);
-  renderEditor();
   renderMap({ slots: state.slots });
+  renderEditor();
+  showToast(`Deleted ${id}.`, undoLayout);
 });
-let draggingHandle = null;
+
+// Corner drag: the corner keeps the offset from where it was grabbed, follows the
+// pointer 1:1 (captured, so it keeps tracking outside the map), and only its own
+// slot is redrawn while it moves.
+// Neighbouring slots share corners, so the 28 px targets can overlap: take the
+// handle whose centre is nearest the pointer, not whichever is on top.
+function nearestHandle(event, fallback) {
+  let best = fallback;
+  let bestDistance = Infinity;
+  for (const els of editor.els) {
+    for (const handle of els.handles) {
+      const box = handle.getBoundingClientRect();
+      const distance = Math.hypot(event.clientX - (box.left + box.width / 2), event.clientY - (box.top + box.height / 2));
+      if (distance <= box.width / 2 && distance < bestDistance) {
+        best = handle;
+        bestDistance = distance;
+      }
+    }
+  }
+  return best;
+}
+
 $("editorLayer").addEventListener("pointerdown", (event) => {
-  const handle = event.target.closest("[data-point-index]");
-  if (!handle) return;
-  draggingHandle = {
-    slotIndex: Number(handle.dataset.slotIndex),
-    pointIndex: Number(handle.dataset.pointIndex),
+  const target = event.target.closest("[data-point-index]");
+  if (!target || event.button !== 0) return;
+  const handle = nearestHandle(event, target);
+  const slotIndex = Number(handle.dataset.slotIndex);
+  const pointIndex = Number(handle.dataset.pointIndex);
+  const point = state.slotConfig[slotIndex]?.points[pointIndex];
+  if (!point) return;
+  const at = mapPoint(event);
+  editor.drag = {
+    handle,
+    slotIndex,
+    pointIndex,
+    pointerId: event.pointerId,
+    offset: [point[0] - at[0], point[1] - at[1]],
+    before: cloneLayout(),
+    moved: false,
   };
+  handle.setPointerCapture(event.pointerId);
+  handle.classList.add("is-dragging");
   event.preventDefault();
 });
-document.addEventListener("pointermove", (event) => {
-  if (!draggingHandle) return;
-  const slot = state.slotConfig[draggingHandle.slotIndex];
-  if (!slot) return;
-  slot.points[draggingHandle.pointIndex] = mapPoint(event);
-  renderEditor();
+$("editorLayer").addEventListener("pointermove", (event) => {
+  const drag = editor.drag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  const at = mapPoint(event);
+  state.slotConfig[drag.slotIndex].points[drag.pointIndex] = [
+    clampPercent(at[0] + drag.offset[0]),
+    clampPercent(at[1] + drag.offset[1]),
+  ];
+  drag.moved = true;
+  positionEditorSlot(drag.slotIndex);
 });
-document.addEventListener("pointerup", () => {
-  draggingHandle = null;
+
+function endHandleDrag(commit) {
+  const drag = editor.drag;
+  if (!drag) return;
+  editor.drag = null;
+  drag.handle.classList.remove("is-dragging");
+  if (drag.handle.hasPointerCapture?.(drag.pointerId)) drag.handle.releasePointerCapture(drag.pointerId);
+  if (!drag.moved) return;
+  if (commit) {
+    pushUndo(drag.before);
+    renderMap({ slots: state.slots });
+  } else {
+    state.slotConfig = drag.before.slotConfig;
+    state.slots = drag.before.slots;
+    renderMap({ slots: state.slots });
+    positionEditorSlot(drag.slotIndex);
+  }
+}
+$("editorLayer").addEventListener("pointerup", () => endHandleDrag(true));
+$("editorLayer").addEventListener("pointercancel", () => endHandleDrag(false));
+
+// Keyboard: arrow keys nudge a focused corner (0.5 % of the frame, 2 % with Shift).
+const NUDGE = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+$("editorLayer").addEventListener("keydown", (event) => {
+  const handle = event.target.closest("[data-point-index]");
+  const direction = NUDGE[event.key];
+  if (!handle || !direction) return;
+  event.preventDefault();
+  const slotIndex = Number(handle.dataset.slotIndex);
+  const pointIndex = Number(handle.dataset.pointIndex);
+  const point = state.slotConfig[slotIndex]?.points[pointIndex];
+  if (!point) return;
+  if (!event.repeat) pushUndo(); // one undo step per key press, however long it is held
+  const step = event.shiftKey ? 2 : 0.5;
+  state.slotConfig[slotIndex].points[pointIndex] = [
+    clampPercent(point[0] + direction[0] * step),
+    clampPercent(point[1] + direction[1] * step),
+  ];
+  positionEditorSlot(slotIndex);
+  renderMap({ slots: state.slots });
 });
+
 $("clearLayout").addEventListener("click", () => {
-  if (!window.confirm("Clear every parking slot from this layout?")) return;
+  // No confirmation dialog: nothing is saved until Save layout, and Undo brings it back.
   if (!state.editing) setEditMode(true);
+  if (!state.slotConfig.length) return;
+  pushUndo();
   state.slotConfig = [];
   state.slots = [];
-  renderEditor();
   renderMap({ slots: [] });
+  renderEditor();
+  showToast("Cleared every slot (not saved yet).", undoLayout);
 });
-let drawing = null;
+
+// Drawing a new slot: drag on an empty part of the frame.
 $("lotMap").addEventListener("pointerdown", (event) => {
   if (
     !state.editing ||
+    event.button !== 0 ||
     event.target.closest("button") ||
-    event.target.closest(".editor-slot")
+    event.target.closest(".map-toast")
   )
     return;
-  drawing = { start: mapPoint(event), preview: document.createElement("div") };
-  drawing.preview.className = "draw-preview";
-  $("editorLayer").appendChild(drawing.preview);
+  editor.drawing = { start: mapPoint(event), preview: document.createElement("div"), pointerId: event.pointerId };
+  editor.drawing.preview.className = "draw-preview";
+  $("editorLayer").appendChild(editor.drawing.preview);
   event.currentTarget.setPointerCapture(event.pointerId);
 });
 $("lotMap").addEventListener("pointermove", (event) => {
-  if (!drawing) return;
+  const drawing = editor.drawing;
+  if (!drawing || event.pointerId !== drawing.pointerId) return;
   const end = mapPoint(event);
   const left = Math.min(drawing.start[0], end[0]);
   const top = Math.min(drawing.start[1], end[1]);
@@ -523,39 +900,107 @@ $("lotMap").addEventListener("pointermove", (event) => {
   drawing.preview.style.height = `${Math.abs(end[1] - drawing.start[1])}%`;
 });
 $("lotMap").addEventListener("pointerup", (event) => {
-  if (!drawing) return;
+  const drawing = editor.drawing;
+  if (!drawing || event.pointerId !== drawing.pointerId) return;
+  editor.drawing = null;
+  drawing.preview.remove();
   const end = mapPoint(event);
   const left = Math.min(drawing.start[0], end[0]);
   const right = Math.max(drawing.start[0], end[0]);
   const top = Math.min(drawing.start[1], end[1]);
   const bottom = Math.max(drawing.start[1], end[1]);
-  drawing.preview.remove();
-  if (right - left >= 2 && bottom - top >= 2) {
-    let suffix = state.slotConfig.length + 1;
-    let id = `S${String(suffix).padStart(2, "0")}`;
-    while (state.slotConfig.some((slot) => slot.id === id)) {
-      suffix += 1;
-      id = `S${String(suffix).padStart(2, "0")}`;
-    }
-    const points = [
-      [left, top],
-      [right, top],
-      [right, bottom],
-      [left, bottom],
-    ];
-    state.slotConfig.push({ id, points });
-    state.slots.push({ id, status: "unknown", confidence: 0, points });
-    renderEditor();
-    renderMap({ slots: state.slots });
+  if (right - left < 2 || bottom - top < 2) return;
+  let suffix = state.slotConfig.length + 1;
+  let id = `S${String(suffix).padStart(2, "0")}`;
+  while (state.slotConfig.some((slot) => slot.id === id)) {
+    suffix += 1;
+    id = `S${String(suffix).padStart(2, "0")}`;
   }
-  drawing = null;
+  const points = [
+    [left, top],
+    [right, top],
+    [right, bottom],
+    [left, bottom],
+  ];
+  pushUndo();
+  state.slotConfig.push({ id, points });
+  state.slots.push({ id, status: "unknown", confidence: 0, points });
+  renderMap({ slots: state.slots });
+  renderEditor();
 });
+$("lotMap").addEventListener("pointercancel", () => {
+  if (!editor.drawing) return;
+  editor.drawing.preview.remove();
+  editor.drawing = null;
+});
+
+// Esc cancels the gesture in progress, or else the whole edit (with an Undo toast).
+// Ctrl+Z / Cmd+Z undoes the last change while editing.
+document.addEventListener("keydown", (event) => {
+  if (!state.editing || $("configDialog").open) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    if (editor.drag || editor.drawing) cancelGesture();
+    else cancelEditing();
+  } else if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "z") {
+    if (event.target.closest("input, textarea, select")) return;
+    event.preventDefault();
+    undoLayout();
+  }
+});
+
+// --- Upload: pick a file, or drop one on the upload zone ---
+const uploadZone = $("uploadZone");
+const UPLOAD_PROMPT = uploadZone.querySelector("strong").textContent;
+
+function showChosenFile(file) {
+  uploadZone.querySelector("strong").textContent = file ? file.name : UPLOAD_PROMPT;
+}
+
+const draggingFiles = (event) => Boolean(event.dataTransfer?.types?.includes("Files"));
+
+for (const type of ["dragenter", "dragover"]) {
+  uploadZone.addEventListener(type, (event) => {
+    if (!draggingFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    uploadZone.classList.add("is-dragover");
+  });
+}
+uploadZone.addEventListener("dragleave", (event) => {
+  if (!uploadZone.contains(event.relatedTarget)) uploadZone.classList.remove("is-dragover");
+});
+uploadZone.addEventListener("drop", (event) => {
+  if (!draggingFiles(event)) return;
+  event.preventDefault();
+  uploadZone.classList.remove("is-dragover");
+  const file = event.dataTransfer.files[0];
+  if (!file) return;
+  // Some video types have no MIME type in the browser; the server checks every file.
+  if (file.type && !/^(image|video)\//.test(file.type)) {
+    $("formMessage").textContent = `${file.name} is not an image or video.`;
+    return;
+  }
+  const chosen = new DataTransfer();
+  chosen.items.add(file);
+  $("sourceFile").files = chosen.files;
+  showChosenFile(file);
+  $("formMessage").textContent = "File ready. Press Process file to classify it.";
+});
+// A file dropped anywhere else would make the browser open it and leave the dashboard.
+window.addEventListener("dragover", (event) => {
+  if (!draggingFiles(event) || uploadZone.contains(event.target)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "none";
+});
+window.addEventListener("drop", (event) => {
+  if (draggingFiles(event) && !uploadZone.contains(event.target)) event.preventDefault();
+});
+
 $("sourceFile").addEventListener("change", (event) => {
-  const file = event.target.files[0];
-  if (file)
-    event.target.closest("label").querySelector("strong").textContent =
-      file.name;
+  showChosenFile(event.target.files[0]);
 });
+
 $("uploadForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const message = $("formMessage");

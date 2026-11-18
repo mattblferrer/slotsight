@@ -12,7 +12,7 @@
     />
     <link
       rel="stylesheet"
-      href="{{ url_for('static', filename='style.css', v='9') }}"
+      href="{{ url_for('static', filename='style.css', v='10') }}"
     />
   </head>
   <body>
@@ -21,8 +21,8 @@
         ><span class="brand-mark">S</span><span>slotsight</span></a
       >
       <div class="topbar-meta">
-        <span class="live-dot"></span><span>Live monitor</span
-        ><span class="divider"></span><span id="sourceLabel">Demo source</span>
+        <span class="live-dot" id="liveDot"></span><span id="liveText">Connecting...</span
+        ><span class="divider" id="sourceDivider" hidden></span><span id="sourceLabel" hidden></span>
       </div>
       <button
         class="icon-button"
@@ -75,7 +75,7 @@
           <span class="stat-label">System health</span
           ><strong id="modelLabel">Demo</strong
           ><span class="stat-detail"
-            ><span class="health-pill">● Online</span> /
+            ><span class="health-pill" id="healthPill">Connecting...</span> /
             <span id="classifierLabel">refresh &lt; 5 sec</span></span
           >
         </article>
@@ -94,6 +94,12 @@
             <div class="map-actions">
               <button class="map-edit-button" id="editLayout" type="button">
                 Edit layout
+              </button>
+              <button class="map-edit-button" id="cancelLayout" type="button" hidden>
+                Cancel
+              </button>
+              <button class="map-edit-button" id="undoLayout" type="button" hidden disabled>
+                Undo
               </button>
               <button class="map-clear-button" id="clearLayout" type="button">
                 Clear layout
@@ -114,7 +120,18 @@
             <div class="editor-layer" id="editorLayer" hidden></div>
             <div class="confidence-tooltip" id="confidenceTooltip" hidden></div>
             <div class="map-stamp" id="mapStamp" aria-live="polite">Updated --:--:--</div>
+            <div class="map-toast" id="mapToast" role="status" hidden>
+              <span id="mapToastText"></span
+              ><button type="button" id="mapToastUndo">Undo</button>
+            </div>
           </div>
+          <p class="editor-hint" id="editorHint" hidden>
+            Drag on the frame to draw a slot. Drag a corner to reshape it, or
+            focus a corner and use the arrow keys (Shift for bigger steps).
+            Ctrl+Z undoes a change; Esc cancels the drag or the whole edit.
+            Nothing is saved until you press Save layout.
+          </p>
+          <p class="form-message map-message" id="mapMessage" role="status"></p>
           <div class="map-footer">
             <div class="legend">
               <span><i class="legend-swatch vacant"></i>Available</span
@@ -132,7 +149,7 @@
               <p class="eyebrow">Activity</p>
               <h2>Latest reading</h2>
             </div>
-            <span class="pulse-ring"></span>
+            <span class="pulse-ring" id="activityPulse"></span>
           </div>
           <div class="activity-list" id="activityList"></div>
           <div class="activity-bottom">
@@ -140,7 +157,9 @@
             ><label class="switch"
               ><input
                 type="checkbox"
+                class="visually-hidden"
                 id="autoRefresh"
+                aria-label="Auto refresh"
                 checked /><span></span></label
             ><span id="refreshInterval">2s</span>
           </div>
@@ -197,13 +216,14 @@
             detection model is installed, a demo feed keeps the dashboard moving.
           </p>
           <form id="uploadForm">
-            <label class="upload-zone" for="sourceFile"
+            <label class="upload-zone" id="uploadZone" for="sourceFile"
               ><span class="upload-plus">+</span
               ><span
                 ><strong>Drop an image or video here</strong
                 ><small>or browse from your device (up to 100 MB)</small></span
               ><input
                 id="sourceFile"
+                class="visually-hidden"
                 name="source"
                 type="file"
                 accept="image/*,video/*" /></label
@@ -336,6 +356,6 @@
         </div>
       </form>
     </dialog>
-    <script src="{{ url_for('static', filename='app.js', v='8') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='9') }}"></script>
   </body>
 </html>
