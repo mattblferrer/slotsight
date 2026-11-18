@@ -42,6 +42,8 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const STATUSES = ["occupied", "vacant", "unknown"];
 // A shape as well as a colour, so status reads without relying on colour alone.
 const STATUS_GLYPHS = { occupied: "●", vacant: "○", unknown: "?" };
+// The words people see; the data and exports keep vacant / occupied / unknown.
+const STATUS_NAMES = { occupied: "Taken", vacant: "Free", unknown: "Not sure" };
 const MODEL_ERROR_STATES = ["error", "needs_package", "unknown"];
 const TONES = ["live", "warn", "error", "idle", "offline"];
 
@@ -65,10 +67,11 @@ function statusDuration(item, readingTime) {
 }
 
 function slotLabel(item, readingTime = state.readingTime) {
-  const parts = [item.id, statusOf(item)];
+  const parts = [item.id, STATUS_NAMES[statusOf(item)].toLowerCase()];
   const duration = statusDuration(item, readingTime);
   if (duration) parts.push(`for ${duration}`);
-  if (item.raw_status && item.raw_status !== item.status) parts.push(`latest frame: ${item.raw_status}, confirming`);
+  if (item.raw_status && item.raw_status !== item.status)
+    parts.push(`latest frame: ${(STATUS_NAMES[item.raw_status] || item.raw_status).toLowerCase()}, confirming`);
   if (item.reason) parts.push(item.reason);
   parts.push(`${Math.round((item.confidence ?? 0) * 100)}% confidence`);
   if (item.updated_at) parts.push(timeOnly(item.updated_at));
@@ -281,6 +284,11 @@ function renderLiveState() {
   setText($("liveText"), live.text);
   setText($("healthPill"), live.text);
   $("lotMap").classList.toggle("is-stale", Boolean(live.stale));
+  // The sign's LED only glows for a current, real reading: never for demo data,
+  // no frame, a model error, a stale source or a lost connection.
+  const source = state.lastData?.source;
+  const current = !live.stale && !state.offline && source && !["demo", "none", "model error"].includes(source);
+  $("stats").classList.toggle("is-dimmed", !current);
   renderMapStamp(state.lastData, live.stale ? live.text : "");
 }
 
@@ -298,7 +306,6 @@ function trackFreshness(data) {
   }
 }
 
-const STATUS_NAMES = { occupied: "Occupied", vacant: "Available", unknown: "Unknown" };
 const changedTime = (item) => Date.parse(item.changed_at) || 0;
 const byId = new Intl.Collator(undefined, { numeric: true });
 
@@ -404,6 +411,8 @@ function render(data) {
   ).length;
   setText($("freeCount"), String(data.free ?? "--"));
   setText($("totalCount"), String(data.total ?? "--"));
+  setText($("ledTotal"), String(data.total ?? "--"));
+  setText($("freeUnit"), data.free === 1 ? "space" : "spaces");
   setText($("topbarFreeCount"), `${data.free ?? "--"} of ${data.total ?? "--"}`);
   setText($("occupiedCount"), String(occupied));
   setText($("unknownCount"), String(data.unknown ?? 0));
@@ -975,7 +984,7 @@ uploadZone.addEventListener("drop", (event) => {
   chosen.items.add(file);
   $("sourceFile").files = chosen.files;
   showChosenFile(file);
-  $("formMessage").textContent = "File ready. Press Process file to classify it.";
+  $("formMessage").textContent = "File ready. Press Check this file to read it.";
 });
 // A file dropped anywhere else would make the browser open it and leave the dashboard.
 window.addEventListener("dragover", (event) => {
@@ -1296,7 +1305,7 @@ $("applyJson").addEventListener("click", async () => {
       body: JSON.stringify({ slots }),
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Could not apply the polygons.");
+    if (!response.ok) throw new Error(data.error || "Could not apply the outlines.");
     state.slotConfig = slots;
     message.textContent = data.message;
     refresh();
@@ -1374,7 +1383,7 @@ function renderFreeChart(data) {
   const box = $("freeChart");
   const points = data.series.map((point, index) => ({ ...point, index })).filter((point) => point.free != null);
   if (!points.length) {
-    emptyChart(box, "No readings in this range yet. Process a video or start a live source.");
+    emptyChart(box, "No readings in this range yet. Check a video or connect a live camera.");
     return;
   }
   const width = Math.max(260, box.clientWidth);
@@ -1524,14 +1533,14 @@ function renderHourChart(data) {
     const group = svgEl("g", {}, svg);
     // The hit target is the whole column, bigger than the bar.
     const hit = svgEl("rect", { x: center - band / 2, y: margin.top, width: band, height: plotHeight, class: "chart-hit", tabindex: "0" }, group);
-    const label = `${hourLabel(hour.hour)}-${hourLabel((hour.hour + 1) % 24)}: ${Math.round(hour.occupancy * 100)}% occupied${peaks.has(hour.hour) ? " (peak)" : ""}, ${hour.frames} frames`;
+    const label = `${hourLabel(hour.hour)}-${hourLabel((hour.hour + 1) % 24)}: ${Math.round(hour.occupancy * 100)}% taken${peaks.has(hour.hour) ? " (peak)" : ""}, ${hour.frames} frames`;
     hit.setAttribute("aria-label", label);
     svgEl("path", { d: roundedTopBar(center - barWidth / 2, top, barWidth, barHeight), class: `chart-bar${peaks.has(hour.hour) ? " is-peak" : ""}` }, group);
     if (hour.hour === data.peak_hours[0]) {
       // Only the busiest hour carries a value; the others are listed below the chart.
       svgEl("text", { x: center, y: top - 5, "text-anchor": "middle", class: "chart-label" }, group).textContent = `${Math.round(hour.occupancy * 100)}%`;
     }
-    const lines = [`${Math.round(hour.occupancy * 100)}% occupied`, `${hourLabel(hour.hour)}-${hourLabel((hour.hour + 1) % 24)}${peaks.has(hour.hour) ? " / peak" : ""}`, `${hour.frames} frames`];
+    const lines = [`${Math.round(hour.occupancy * 100)}% taken`, `${hourLabel(hour.hour)}-${hourLabel((hour.hour + 1) % 24)}${peaks.has(hour.hour) ? " / peak" : ""}`, `${hour.frames} frames`];
     hit.addEventListener("pointermove", (event) => showChartTooltip(lines, event.clientX, event.clientY));
     hit.addEventListener("pointerleave", hideChartTooltip);
     hit.addEventListener("focus", () => {
@@ -1577,8 +1586,8 @@ function renderTrendTable(data) {
     .filter((hour) => hour.occupancy != null)
     .map((hour) => [hourLabel(hour.hour), `${Math.round(hour.occupancy * 100)}%`, data.peak_hours.includes(hour.hour) ? "peak" : "", hour.frames]);
   $("trendTable").replaceChildren(
-    tableOf("Free slots per interval", ["Interval", "Free (avg)", "Lowest", "Unknown", "Frames"], series),
-    tableOf("Occupancy by hour", ["Hour", "Occupied", "", "Frames"], hours),
+    tableOf("Free slots per interval", ["Interval", "Free (avg)", "Lowest", "Not sure", "Frames"], series),
+    tableOf("Occupancy by hour", ["Hour", "Taken", "", "Frames"], hours),
   );
 }
 

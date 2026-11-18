@@ -77,3 +77,13 @@ def test_settings_dialog_applies_each_change_and_shows_one_frame():
     assert "/api/settings" in APP_JS
     # The annotated frame is shown once, on the map; the second copy in the source panel is gone.
     assert 'id="previewImage"' not in INDEX and 'id="framePreview"' not in INDEX
+
+
+def test_fonts_are_self_hosted_with_their_licences():
+    # Overpass and Overpass Mono (SIL OFL) are served from static/fonts, never a font CDN.
+    fonts = SLOTSIGHT_DIR / "static" / "fonts"
+    for name in ("overpass.woff2", "overpass-mono.woff2"):
+        assert (fonts / name).read_bytes()[:4] == b"wOF2", name
+        assert f'url("fonts/{name}")' in STYLE
+    for name in ("OVERPASS-LICENSE", "OVERPASS-MONO-LICENSE"):
+        assert "SIL Open Font License" in (fonts / name).read_text(encoding="utf-8")

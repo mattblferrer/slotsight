@@ -38,7 +38,9 @@ Only `README.md`, `.gitignore` and this `.claude/` folder sit at the top level. 
 - `slotsight/trends.py`: pure aggregation of `history_rows()` into free slots per interval (24h/7d, ending at the latest reading) and occupancy by local hour of day.
 - `slotsight/sources.py`: `SourceWorker`, which reads video files, streams and cameras on a background thread and samples one frame per `sample_interval_s`
 - `slotsight/static/app.js`: dashboard logic (2 s polling, map rendering, slot polygon editor, config dialog, uploads, live-source controls, job progress)
-- `slotsight/static/style.css`, `slotsight/templates/index.html`: the UI
+- `slotsight/static/style.css`, `slotsight/templates/index.html`: the UI (the "garage wayfinding sign" design: the sign with the LED free count leads; sign blue only on the sign, brand mark and primary button)
+- `slotsight/static/theme.js`: applies the viewer's theme (System, Light, Dark; kept in `localStorage`) before the page is drawn; loaded in `<head>` of both pages
+- `slotsight/static/fonts/`: self-hosted Overpass and Overpass Mono (SIL OFL, licences and source in its `README.md`). Never load fonts or scripts from another site
 - `slotsight/config/slots.json`: slot polygons, with coordinates **normalised 0–100** relative to frame width and height. Gitignored; created from `DEFAULT_SLOTS` on first run.
 - `slotsight/config/settings.txt`: JSON despite the extension (`lot_name`, `review_threshold`, `overlap_threshold`, `sample_interval_s`, `inference_size`, `slot_classifier`, `empty_check_threshold`, `model`). Gitignored; created from the `app.py` defaults on first run. A legacy `model_path` is migrated to `model` automatically.
 - `slotsight/data/occupancy_history.csv`: append-only log (`timestamp, slot_id, status, confidence, source, frame_time_s, raw_status`; `status` is smoothed for sequential sources, `raw_status` is the single frame's result). Gitignored, like the archived `occupancy_history-*.csv` files.

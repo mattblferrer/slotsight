@@ -7,14 +7,21 @@
     <title>SlotSight</title>
     <script src="{{ url_for('static', filename='theme.js', v='1') }}"></script>
     <link
+      rel="preload"
+      href="{{ url_for('static', filename='fonts/overpass.woff2') }}"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
       rel="stylesheet"
-      href="{{ url_for('static', filename='style.css', v='12') }}"
+      href="{{ url_for('static', filename='style.css', v='13') }}"
     />
   </head>
   <body>
     <header class="topbar" id="topbar">
       <a class="brand" href="/"
-        ><span class="brand-mark">S</span><span>slotsight</span></a
+        ><span class="brand-mark" aria-hidden="true">S</span><span>SlotSight</span></a
       >
       <span class="topbar-free" id="topbarFree" aria-hidden="true"
         ><strong id="topbarFreeCount">--</strong> free</span
@@ -32,56 +39,47 @@
       >
         &#8635;
       </button>
+      <button class="button button-secondary button-sm" id="openSettings" type="button">
+        Settings
+      </button>
     </header>
 
     <main class="shell">
-      <section class="page-head">
-        <div>
-          <p class="eyebrow">Parking lot</p>
-          <h1 id="lotNameLabel">Lot 01</h1>
+      <!-- The parking-guidance sign: the lot, and how many spaces are free right now. -->
+      <section class="sign" id="stats" aria-label="Spaces now">
+        <div class="sign-face">
+          <div class="sign-lot">
+            <span class="sign-p" aria-hidden="true">P</span>
+            <div class="sign-text">
+              <h1 id="lotNameLabel">Lot 01</h1>
+              <p class="sign-counts">
+                <span><i class="sign-key key-taken"></i><span id="occupiedCount">--</span> taken</span
+                ><span><i class="sign-key key-unsure"></i><span id="unknownCount">--</span> not sure</span
+                ><span class="sign-total"><span id="totalCount">--</span> bays watched</span>
+              </p>
+            </div>
+          </div>
+          <p class="sign-led">
+            <strong id="freeCount">--</strong
+            ><span class="sign-led-label"
+              ><span id="freeUnit">spaces</span
+              ><small>free of <span id="ledTotal">--</span></small></span
+            >
+          </p>
         </div>
-        <button class="button button-secondary" id="openSettings" type="button">
-          Settings
-        </button>
-      </section>
-
-      <section class="stats" id="stats" aria-label="Lot summary">
-        <article class="stat-card stat-main">
-          <span class="stat-label">Available now</span
-          ><strong id="freeCount">--</strong
-          ><span class="stat-detail"
-            >of <span id="totalCount">--</span> slots</span
-          >
-        </article>
-        <article class="stat-card">
-          <span class="stat-label"
-            ><span class="status-dot dot-occupied"></span>Occupied</span
-          ><strong id="occupiedCount">--</strong
-          ><span class="stat-detail">vehicle in the slot</span>
-        </article>
-        <article class="stat-card">
-          <span class="stat-label"
-            ><span class="status-dot dot-unknown"></span>Unknown</span
-          ><strong id="unknownCount">--</strong
-          ><span class="stat-detail">too unsure to call</span>
-        </article>
-        <article class="stat-card stat-health">
-          <span class="stat-label">System</span
-          ><strong id="modelLabel">--</strong
-          ><span class="stat-detail"
-            ><span class="health-pill" id="healthPill">Connecting...</span>
-            <span id="classifierLabel"></span></span
-          >
-        </article>
+        <p class="sign-foot">
+          <span class="health-pill" id="healthPill">Connecting...</span
+          ><span id="modelLabel"></span><span id="classifierLabel"></span>
+        </p>
       </section>
 
       <p class="model-alert" id="modelAlert" role="alert" hidden></p>
       <p class="model-alert" id="cameraAlert" role="alert" hidden></p>
 
-      <section class="workspace">
-        <div class="panel map-panel">
+      <div class="workspace">
+        <section class="panel map-panel" aria-labelledby="mapTitle">
           <div class="panel-heading">
-            <h2>Occupancy map</h2>
+            <h2 id="mapTitle">Bays</h2>
             <div class="map-actions">
               <button class="button button-secondary button-sm" id="editLayout" type="button">
                 Edit layout
@@ -105,8 +103,8 @@
             />
             <div class="map-grid"></div>
             <p class="map-empty">
-              No frame yet. Process an image or video, or start a live source,
-              under Camera &amp; footage.
+              No frame yet. Check a photo or video, or connect a camera, under
+              Camera and footage.
             </p>
             <div id="slotLayer"></div>
             <div class="editor-layer" id="editorLayer" hidden></div>
@@ -118,7 +116,7 @@
             </div>
           </div>
           <p class="editor-hint" id="editorHint" hidden>
-            Drag on the frame to draw a slot. Drag a corner to reshape it, or
+            Drag on the frame to draw a bay. Drag a corner to reshape it, or
             focus a corner and use the arrow keys (Shift for bigger steps).
             Ctrl+Z undoes a change; Esc cancels the drag or the whole edit.
             Nothing is saved until you press Save layout.
@@ -126,19 +124,19 @@
           <p class="form-message map-message" id="mapMessage" role="status"></p>
           <div class="map-footer">
             <div class="legend">
-              <span><i class="legend-swatch vacant"></i>Available</span
-              ><span><i class="legend-swatch occupied"></i>Occupied</span
-              ><span><i class="legend-swatch unknown"></i>Unknown</span>
+              <span><i class="legend-swatch vacant"></i>Free</span
+              ><span><i class="legend-swatch occupied"></i>Taken</span
+              ><span><i class="legend-swatch unknown"></i>Not sure, never counted as free</span>
             </div>
             <span class="map-footnote" id="mapFootnote"></span>
           </div>
-        </div>
+        </section>
         <aside class="panel activity-panel" aria-labelledby="activityTitle">
           <div class="panel-heading">
             <h2 id="activityTitle">Recent changes</h2>
             <span class="pulse-ring" id="activityPulse"></span>
           </div>
-          <p class="panel-note">Each slot's current status and when it began, newest first.</p>
+          <p class="panel-note">Each bay's status and when it began, newest first.</p>
           <div class="activity-list" id="activityList"></div>
           <div class="activity-bottom">
             <label class="switch" for="autoRefresh"
@@ -147,17 +145,17 @@
                 class="visually-hidden"
                 id="autoRefresh"
                 checked /><span class="switch-track"></span
-              ><span class="switch-label">Auto refresh every <span id="refreshInterval">2 s</span></span></label
+              ><span class="switch-label">Refresh automatically every <span id="refreshInterval">2 s</span></span></label
             >
           </div>
         </aside>
-      </section>
+      </div>
 
       <section class="panel trends-panel" aria-labelledby="trendsTitle">
         <div class="panel-heading">
-          <h2 id="trendsTitle">Occupancy over time</h2>
+          <h2 id="trendsTitle">Over time</h2>
           <div class="segmented trend-range" role="group" aria-label="Time range">
-            <button type="button" data-range="24h" aria-pressed="true">24 h</button
+            <button type="button" data-range="24h" aria-pressed="true">24 hours</button
             ><button type="button" data-range="7d" aria-pressed="false">7 days</button>
           </div>
         </div>
@@ -165,7 +163,7 @@
         <div class="trend-grid" id="trendGrid">
           <figure class="trend-chart">
             <figcaption>
-              <strong>Free slots</strong>
+              <strong>Free spaces</strong>
               <span id="freeChartSub">Average per interval, ending at the latest reading</span>
             </figcaption>
             <div class="chart-box" id="freeChart"></div>
@@ -173,7 +171,7 @@
           <figure class="trend-chart">
             <figcaption>
               <strong>Busiest hours</strong>
-              <span>Average share of slots occupied, by hour of day (up to 30 days)</span>
+              <span>Average share of bays taken, by hour of day (up to 30 days)</span>
             </figcaption>
             <div class="chart-box" id="hourChart"></div>
           </figure>
@@ -185,21 +183,21 @@
         <div class="chart-tooltip" id="chartTooltip" role="status" hidden></div>
       </section>
 
-      <section class="lower-grid">
-        <div class="panel source-panel">
+      <div class="lower-grid">
+        <section class="panel source-panel" aria-labelledby="footageTitle">
           <div class="panel-heading">
-            <h2>Camera &amp; footage</h2>
+            <h2 id="footageTitle">Camera and footage</h2>
           </div>
           <p class="panel-copy">
-            Process an image or a video file, or start a live source. Videos
-            are sampled every few seconds of footage.
+            Check a photo or a recording, or connect a live camera. Recordings
+            are read every few seconds of footage.
           </p>
           <form id="uploadForm">
             <label class="upload-zone" id="uploadZone" for="sourceFile"
               ><span class="upload-plus" aria-hidden="true">+</span
               ><span
-                ><strong>Drop an image or video here</strong
-                ><small>or browse from your device (up to 100 MB)</small></span
+                ><strong>Drop a photo or video here</strong
+                ><small>or choose a file, up to 100 MB</small></span
               ><input
                 id="sourceFile"
                 class="visually-hidden"
@@ -207,16 +205,16 @@
                 type="file"
                 accept="image/*,video/*" /></label
             ><label class="config-field recorded-at" for="recordedAt">
-              <span>Footage recorded at (optional)</span>
+              <span>Recorded at, if it isn't live (optional)</span>
               <input id="recordedAt" type="datetime-local" step="1" />
             </label
-            ><button class="button button-accent button-block" type="submit">
-              Process file
+            ><button class="button button-primary button-block" type="submit">
+              Check this file
             </button>
           </form>
           <form class="live-source" id="liveSourceForm">
             <label class="config-field" for="liveSourceInput">
-              <span>Live source</span>
+              <span>Live camera</span>
               <input
                 id="liveSourceInput"
                 placeholder="rtsp://camera/stream, 0 for a webcam, or C:\path\to\video.mp4"
@@ -228,38 +226,31 @@
                 ><input type="checkbox" id="liveRealtime" /> Play video files at
                 recorded speed</label
               >
-              <button class="button button-secondary button-sm" type="submit">Start</button>
+              <button class="button button-secondary button-sm" type="submit">Connect</button>
               <button class="button button-danger button-sm" type="button" id="stopSource" disabled>
-                Stop
+                Disconnect
               </button>
             </div>
           </form>
           <p class="job-status" id="jobStatus" hidden></p>
           <p class="form-message" id="formMessage" role="status"></p>
-        </div>
-        <div class="panel history-panel">
+        </section>
+        <section class="panel history-panel" aria-labelledby="historyTitle">
           <div class="panel-heading">
-            <h2>Export history</h2>
+            <h2 id="historyTitle">History</h2>
           </div>
           <p class="panel-copy">
-            Every processed frame is logged per slot with its status,
-            confidence, source and time.
+            Every reading is kept per bay, with its status, confidence, source
+            and time.
           </p>
           <div class="export-actions">
-            <a class="export-button" href="/api/history.csv"
-              ><span class="file-type">CSV</span><span>Download CSV</span
-              ><span aria-hidden="true">&rarr;</span></a
-            ><a class="export-button" href="/api/history.xlsx"
-              ><span class="file-type file-green">XLSX</span
-              ><span>Download Excel</span><span aria-hidden="true">&rarr;</span></a
-            >
+            <a class="button button-secondary" href="/api/history.csv">Download CSV</a
+            ><a class="button button-secondary" href="/api/history.xlsx">Download Excel</a>
           </div>
-          <a class="history-link" href="/label">Label frames for the accuracy evaluation &rarr;</a>
-        </div>
-      </section>
-      <footer>
-        <span>SlotSight prototype</span><span>One camera, one lot</span>
-      </footer>
+          <a class="history-link" href="/label">Label frames for the accuracy check</a>
+        </section>
+      </div>
+      <footer>SlotSight prototype. One camera, one lot.</footer>
     </main>
 
     <dialog id="settingsDialog" aria-labelledby="settingsTitle">
@@ -289,7 +280,7 @@
         </form>
         <label class="config-field" for="reviewThresholdInput">
           <span
-            ><span>Show as unknown below <output id="reviewThresholdValue">70%</output> confidence</span></span
+            ><span>Show as not sure below <output id="reviewThresholdValue">70%</output> confidence</span></span
           >
           <input
             id="reviewThresholdInput"
@@ -299,7 +290,7 @@
             step="5"
             value="70"
           />
-          <small>A slot read with less confidence is shown as Unknown instead of a guess.</small>
+          <small>A bay read with less confidence is shown as Not sure instead of a guess, and never counted as free.</small>
         </label>
         <label class="config-check" for="classifierInput">
           <input type="checkbox" id="classifierInput" checked />
@@ -327,17 +318,17 @@
         </details>
 
         <details class="settings-group" id="jsonGroup">
-          <summary>Slot polygons as JSON</summary>
+          <summary>Bay outlines as JSON</summary>
           <p class="settings-help">
             For exact values. Coordinates run from 0 to 100 across the frame;
-            each slot needs an id and at least three points. Edit layout on
-            the map is the easier way to draw them.
+            each bay needs an id and at least three points. Edit layout on the
+            map is the easier way to draw them.
           </p>
-          <textarea id="configInput" spellcheck="false" aria-label="Slot polygons (JSON)"></textarea>
+          <textarea id="configInput" spellcheck="false" aria-label="Bay outlines (JSON)"></textarea>
           <div class="dialog-actions">
             <span class="form-message" id="jsonMessage" role="status"></span
             ><button class="button button-secondary" id="applyJson" type="button">
-              Apply polygons
+              Apply outlines
             </button>
           </div>
         </details>
@@ -348,6 +339,6 @@
         </div>
       </div>
     </dialog>
-    <script src="{{ url_for('static', filename='app.js', v='11') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='12') }}"></script>
   </body>
 </html>
